@@ -198,7 +198,7 @@ EXPECTED_METHODS = {
     "YTHotConfigIosPlayerClientSharedConfigImpl": {"enablePlayerPlaybackMigration": "B16@0:8"},
     "YTHotConfig": {"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration": "B16@0:8"},
     "HAMSBARAudioTrackRenderer": {"underlyingRenderer": "@16@0:8", "createRendererAndReturnError:": "B24@0:8^@16"},
-    "MLHAMQueuePlayerContext": {"audioFadeController": "@16@0:8"},
+    "MLHAMQueuePlayerContext": {"audioFadeController": "@16@0:8", "player": "@16@0:8"},
     "MLAudioFadeController": {"setPendingTransitionEffects:": "v24@0:8@16"},
     "YTPlayerViewController": {
         "contentPlayerResponse": "@16@0:8",
@@ -220,7 +220,7 @@ EXPECTED_METHODS = {
         "canEnqueueUpcomingPlaybacks": "B16@0:8", "canBeEnqueuedGaplessly": "B16@0:8",
         "hasPrerollAds": "B16@0:8", "isLivePlayback": "B16@0:8",
     },
-    "MLHAMMultiPlayerContextState": {"playerContexts": "@16@0:8"},
+    "MLHAMMultiPlayerContextState": {"playerContexts": "@16@0:8", "activePlayerContext": "@16@0:8", "backgroundPlayerContext": "@16@0:8"},
     "YTMCrossfadeTransitionPolicy": {
         "+isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:": "B32@0:8@16@24",
     },
@@ -312,10 +312,11 @@ def verify(input_path, output_path=None):
                            b"iosPlayerClientSharedConfigEnableCrossfade", b"musicPlaybackClientConfigIosEnableCrossfade",
                            b"prepareArtworkForOutgoingContext:clip:", b"YTMUNativeTempoSession",
                            b"YTMUTransitionTrace", b"canEnqueueUpcomingPlaybacks", b"iosPlayerClientSharedConfigEnableVolumeFading",
-                           b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration", b"setPrefetchWindow:",
+                           b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration", b"prefetchWindow",
                            b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:",
                            b"YTMUNativePrefetchBinding", b"YTMUTransitionPreferenceStore",
-                           b"musicPlaybackClientConfigIosEnableMediaDrivenPrefetch", b"shouldPrefetchPlayerTransition", b"transitions r6"):
+                           b"musicPlaybackClientConfigIosEnableMediaDrivenPrefetch", b"shouldPrefetchPlayerTransition",
+                           b"config-unchanged", b"handoff-incomplete", b"cancelForReason:", b"transitions r7"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()

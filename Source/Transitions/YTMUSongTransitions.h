@@ -11,7 +11,10 @@ void YTMUSetTransitionPreference(NSString *key, id value);
 BOOL YTMUTransitionsRequested(void);
 BOOL YTMUTransitionsAllowContentPair(id current, id upcoming);
 BOOL YTMUTransitionsCanReuseNativeQueue(id playerData);
-void YTMUPrepareUpcomingTransitionPlayback(id playback);
+typedef struct { void *configuration; double window; } YTMUNativePrefetchScope;
+YTMUNativePrefetchScope YTMUBeginNativePrefetchCheck(id controller);
+void YTMUEndNativePrefetchCheck(YTMUNativePrefetchScope previous);
+double YTMUScopedNativePrefetchWindow(id configuration, double nativeWindow);
 void YTMURefreshNativePrefetchBinding(id manager);
 BOOL YTMUNativeTransitionPrefetchAllowed(id controller, BOOL nativeAllowed);
 BOOL YTMUOwnsNativePrefetchBinding(id controller);
@@ -49,6 +52,7 @@ void YTMURestoreTransitionControlFrames(UIView *controls);
 - (void)artworkLayoutChanged:(id)view;
 - (void)cancelArtworkForOverlay:(id)view;
 - (void)cancel;
+- (void)cancelForReason:(NSString *)reason;
 @end
 
 @interface YTMUPlayerTransitionButton : UIButton

@@ -37,7 +37,7 @@ class DeliveryTests(unittest.TestCase):
         self.output = Path(self.temp.name) / "output.ipa"
         self.archive(self.input)
 
-    def archive(self, path, injected=False, resources=True, code=True, version="other", encrypted=False, r5=True, r6=True):
+    def archive(self, path, injected=False, resources=True, code=True, version="other", encrypted=False, r5=True, r6=True, r7=True):
         root = "Payload/Test.app/"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(root + "Info.plist", plistlib.dumps({
@@ -51,12 +51,14 @@ class DeliveryTests(unittest.TestCase):
                                  b"prepareArtworkForOutgoingContext:clip:\0YTMUNativeTempoSession\0"
                                  b"YTMUTransitionTrace\0canEnqueueUpcomingPlaybacks\0"
                                  b"iosPlayerClientSharedConfigEnableVolumeFading\0" +
-                                 (b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration\0setPrefetchWindow:\0"
+                                 (b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration\0prefetchWindow\0"
                                   b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:\0transitions r5"
                                   if r5 else b"transitions r4") +
                                  (b"YTMUNativePrefetchBinding\0YTMUTransitionPreferenceStore\0"
                                   b"musicPlaybackClientConfigIosEnableMediaDrivenPrefetch\0shouldPrefetchPlayerTransition\0transitions r6"
-                                  if r5 and r6 else b"") if code else b"old tweak")
+                                  if r5 and r6 else b"") +
+                                 (b"config-unchanged\0handoff-incomplete\0cancelForReason:\0transitions r7"
+                                  if r5 and r6 and r7 else b"") if code else b"old tweak")
                 if resources:
                     archive.writestr(root + "YTMusicUltimate.bundle/en.lproj/Localizable.strings",
                                      b'"SONG_TRANSITIONS" = "Song Transitions";\n"AUTOMIX" = "AutoMix";')
@@ -97,6 +99,11 @@ class DeliveryTests(unittest.TestCase):
     def test_failed_r5_build_is_rejected(self):
         self.archive(self.output, injected=True, r6=False)
         with self.assertRaisesRegex(ValueError, "YTMUNativePrefetchBinding"):
+            self.check(self.input, self.output)
+
+    def test_failed_r6_handoff_build_is_rejected(self):
+        self.archive(self.output, injected=True, r7=False)
+        with self.assertRaisesRegex(ValueError, "config-unchanged"):
             self.check(self.input, self.output)
 
     def test_version_changed_during_injection(self):

@@ -6,7 +6,7 @@ beneath Shuffle and Repeat in the native music player. Tap a mode to enable it;
 tap the active mode again to turn transitions off. Only one mode is active. Defaults are off, AutoMix, and four seconds.
 The controls follow [Apple Music's interaction model](https://support.apple.com/en-ie/105067).
 Settings use the existing `YTMUltimate` preferences dictionary and apply live.
-Revision 6 caches a normalized, immutable snapshot and refreshes it on preference
+The implementation caches a normalized, immutable snapshot and refreshes it on preference
 changes; frequent native playback queries no longer copy the defaults dictionary.
 
 ## Compatibility and current verification
@@ -40,8 +40,11 @@ prefetch, keeping the prepared `YTPlayerPlayback` intact through the upcoming ma
 Online songs otherwise default to a zero-second prefetch window when the endpoint
 has no hint. The immediate next song now gets at least 12–20 seconds of prefetch
 lead for Crossfade, or 32 seconds for AutoMix's bounded analysis. A longer native
-window is preserved. The original window is restored when transitions are disabled,
-and native changes to the window are respected. No additional upcoming songs are
+window is preserved. Revision 7 extends this window only during the synchronous
+native `shouldPrefetchPlayerTransition` check, using a thread-local scope restored
+in `@finally`, including nested checks and exceptions. The config's pointer and
+stored fields never change; hashing, equality, queue activation and unrelated
+threads see the original value. Native changes to the window are respected. No additional upcoming songs are
 requested beyond that immediate next song while transitions are enabled.
 An eligible song may reuse the native queue despite the server's preference to
 create a new player for the next song, only when YouTube's own gapless check passes
@@ -66,16 +69,23 @@ unsupported content and external playback prevent that additional prefetch.
 Queue replacements and disabling transitions detach the observers and cancel an
 obsolete in-flight resolver; YouTube still owns resolution, timeline delivery and
 queue advancement. There is no new prefetch polling timer or independent player.
-Preparation uses a reusable copy of the native playback config, preserving every
-verified field. This avoids changing shared configs already used in native hash
-tables. One copy is cached per source config and released with that config.
+Revision 6 copied the native playback config to extend the window. Inspection of
+`YTPlayerSequencerDefaultPlaybackItem.isEqualToPlaybackItem:` shows that the
+handler compares config pointers or config equality; its deep comparison includes
+the prefetch window. A copy can therefore make the activated song differ from the
+sequencer item and cause `handleCurrentItem:upcomingItem:` to call
+`loadWithPlayerPlayback:` again, tearing down the native overlap. Revision 7 removes
+that copy and all playback-config writes.
 
-**Status: all five device builds through revision 5 reported no audible overlap.
+**Status: builds through revision 6 have failed on the user's device.
 Revision 5 confirms the native multi-player and fade provider load, but upcoming
 playbacks remain unplayable and the player item has no incoming effect. Revision 6
-adds the missing native clock binding and main-player prefetch initialization.
-Audible playback, background recovery and artwork synchronization still require
-a device test; AutoMix is unverified.**
+resolves the next song and installs a 12-second native fade, but the user reports
+an early hard change, with no audible overlap or artwork dissolve. Revision 7
+preserves config identity, handles native context replacement and the ordering of
+current/next updates during handoff, and records cancellation reasons.
+Audible overlap, background recovery and artwork synchronization in revision 7
+remain unverified until tested on-device; AutoMix is not complete.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -93,6 +103,12 @@ Cancellation clears an active overlap through the native fade and background
 player cleanup methods. Routine queue extension and the native handoff do not
 cancel the overlap. Reapplying the same playback speed does not discard analysis
 or tempo recovery. Native playback owns interruption recovery.
+Native queue updates rebuild context wrappers around the same audio players.
+Handoff verification compares those underlying players, not the old wrapper
+objects. The native context list excludes the outgoing background player; revision
+7 diagnostics report queued, background and total counts separately. Both the old
+and new current-response orderings are preserved while an automatic handoff is
+in progress. Explicit seek, next/previous and reset paths still cancel it.
 
 Only the final and opening 12 seconds of the current/next pair are analysed.
 Analysis starts from native upcoming playback prefetch and runs on one utility

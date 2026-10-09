@@ -97,8 +97,6 @@ static BOOL YTMUOwnsTransitions(void) {
     /* Preserve native ownership and empty-array cancellation. Only the immediate
        next song receives extra preparation; the native sequencer replenishes it. */
     id playbacks = value;
-    if ([value isKindOfClass:NSArray.class] && [value count])
-        YTMUPrepareUpcomingTransitionPlayback([value firstObject]);
     if (YTMUTransitionsRequested() && [value isKindOfClass:NSArray.class] && [value count]) {
         playbacks = @[[value firstObject]];
         YTMURecordTransitionEvent(@"upcoming-input", [NSString stringWithFormat:@"native=%lu prepared=1", (unsigned long)[value count]]);
@@ -115,9 +113,7 @@ static BOOL YTMUOwnsTransitions(void) {
         id pending = ((id (*)(id, SEL))objc_msgSend)(manager, NSSelectorFromString(@"upcomingPlaybacksArray"));
         if ([pending isKindOfClass:NSArray.class] && [pending count]) return nil;
     }
-    id result = %orig;
-    YTMUPrepareUpcomingTransitionPlayback(result);
-    return result;
+    return %orig;
 }
 %end
 %end
@@ -167,11 +163,11 @@ static BOOL YTMUOwnsTransitions(void) {
     [[YTMUSongTransitionCoordinator shared] sequenceChanged];
 }
 - (void)resetSequence {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    [[YTMUSongTransitionCoordinator shared] cancelForReason:@"native-sequence-reset"];
     %orig;
 }
 - (void)setSequenceForTapNextOrTapPrevWithPlayerTransition:(id)transition playbackConfig:(id)config {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    [[YTMUSongTransitionCoordinator shared] cancelForReason:@"next-or-previous"];
     %orig;
 }
 %end
@@ -191,15 +187,15 @@ static BOOL YTMUOwnsTransitions(void) {
     return allowed;
 }
 - (void)seekToTime:(double)time {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    [[YTMUSongTransitionCoordinator shared] cancelForReason:@"seek"];
     %orig;
 }
 - (void)seekToTime:(double)time seekSource:(int)source {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    [[YTMUSongTransitionCoordinator shared] cancelForReason:@"seek-with-source"];
     %orig;
 }
 - (void)seekToTime:(double)time toleranceBefore:(double)before toleranceAfter:(double)after seekSource:(int)source {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    [[YTMUSongTransitionCoordinator shared] cancelForReason:@"seek-with-tolerance"];
     %orig;
 }
 %end
@@ -223,6 +219,11 @@ static BOOL YTMUOwnsTransitions(void) {
         YTMURecordTransitionEvent(@"audio-policy", allowed ? @"native-accepted" : @"native-rejected");
     return allowed;
 }
+- (void)clearBackgroundPlayer {
+    if (YTMUTransitionsRequested())
+        YTMURecordTransitionEvent(@"overlap-cleanup", @"native-background-player-release");
+    %orig;
+}
 - (void)commitTransitionEffects {
     %orig;
     if (YTMUTransitionsRequested()) {
@@ -230,13 +231,16 @@ static BOOL YTMUOwnsTransitions(void) {
         id value = ((id (*)(id, SEL))objc_msgSend)(state, NSSelectorFromString(@"playerContexts"));
         if (![value isKindOfClass:NSArray.class]) return;
         NSArray *contexts = value;
+        id background = ((id (*)(id, SEL))objc_msgSend)(state, NSSelectorFromString(@"backgroundPlayerContext"));
         double largest = 0;
         for (id context in contexts) {
             SEL selector = NSSelectorFromString(@"crossfadeDuration");
             if (YTMUTransitionMethodMatches([context class], selector, "d", @[]))
                 largest = fmax(largest, ((double (*)(id, SEL))objc_msgSend)(context, selector));
         }
-        YTMURecordTransitionEvent(@"audio-contexts", [NSString stringWithFormat:@"count=%lu max-fade=%.2f seconds", (unsigned long)contexts.count, largest]);
+        /* Native playerContexts excludes the outgoing background player. */
+        YTMURecordTransitionEvent(@"audio-contexts", [NSString stringWithFormat:@"queued=%lu background=%d total=%lu max-fade=%.2f seconds",
+            (unsigned long)contexts.count, background != nil, (unsigned long)contexts.count + (background ? 1 : 0), largest]);
     }
 }
 - (void)pauseWithStoppageReason:(int)reason {
@@ -305,7 +309,15 @@ static BOOL YTMUOwnsTransitions(void) {
 %end
 %hook YTUpcomingPlayerTransitionController
 - (BOOL)shouldPrefetchPlayerTransition {
-    BOOL original = %orig;
+    /* Extend only this synchronous eligibility check. The playback config must
+       keep its native identity and values for hashing and queue activation. */
+    YTMUNativePrefetchScope previous = YTMUBeginNativePrefetchCheck(self);
+    BOOL original;
+    @try {
+        original = %orig;
+    } @finally {
+        YTMUEndNativePrefetchCheck(previous);
+    }
     return YTMUNativeTransitionPrefetchAllowed(self, original);
 }
 - (void)prefetchPlayerTransition {
@@ -317,6 +329,12 @@ static BOOL YTMUOwnsTransitions(void) {
     if (YTMUOwnsNativePrefetchBinding(self))
         YTMURecordTransitionEvent(@"resolver-state", [NSString stringWithFormat:@"%ld -> %ld", (long)previous, (long)state]);
     %orig;
+}
+%end
+%hook YTPlaybackConfig
+- (double)prefetchWindow {
+    double original = %orig;
+    return YTMUScopedNativePrefetchWindow(self, original);
 }
 %end
 %end
