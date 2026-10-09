@@ -6,6 +6,8 @@ beneath Shuffle and Repeat in the native music player. Tap a mode to enable it;
 tap the active mode again to turn transitions off. Only one mode is active. Defaults are off, AutoMix, and four seconds.
 The controls follow [Apple Music's interaction model](https://support.apple.com/en-ie/105067).
 Settings use the existing `YTMUltimate` preferences dictionary and apply live.
+Revision 6 caches a normalized, immutable snapshot and refreshes it on preference
+changes; frequent native playback queries no longer copy the defaults dictionary.
 
 ## Compatibility and current verification
 
@@ -50,11 +52,30 @@ playbacks through the native debounced queue scheduler.
 Videos, live streams, podcasts, casting, picture-in-picture and repeat-one bypass
 mixing. User-selected playback speeds other than 1× suppress tempo adjustment.
 
-**Status: all four earlier device builds reported no audible overlap. The revision 4
-report confirms the native multi-player and fade provider load, but the engine still
-has only one audio context and no incoming fade. Revision 5 corrects native prefetch
-mode, prefetch lead time and playback-object migration. Audible playback, background
-recovery and artwork synchronization still require a device test; AutoMix is unverified.**
+Revision 6 also enables the media-driven prefetch flag read by the music watch
+controller before it constructs the main player. The upcoming manager creates
+transition controllers without assigning their current content video; it relies
+on a media-fetch callback to start their resolvers. The revision 5 device report
+contains no such callback, no playable upcoming songs and no incoming audio effect.
+The immediate next controller now receives the manager's actual current video via
+its verified `setCurrentContentVideo:` method. Its existing time/media/buffer
+observers start the native resolver within the preparation window, in foreground
+or background. A minimum-buffer configuration cannot trigger our added preparation
+more than 32 seconds early. Paused/invalid timing, explicit endpoint vetoes,
+unsupported content and external playback prevent that additional prefetch.
+Queue replacements and disabling transitions detach the observers and cancel an
+obsolete in-flight resolver; YouTube still owns resolution, timeline delivery and
+queue advancement. There is no new prefetch polling timer or independent player.
+Preparation uses a reusable copy of the native playback config, preserving every
+verified field. This avoids changing shared configs already used in native hash
+tables. One copy is cached per source config and released with that config.
+
+**Status: all five device builds through revision 5 reported no audible overlap.
+Revision 5 confirms the native multi-player and fade provider load, but upcoming
+playbacks remain unplayable and the player item has no incoming effect. Revision 6
+adds the missing native clock binding and main-player prefetch initialization.
+Audible playback, background recovery and artwork synchronization still require
+a device test; AutoMix is unverified.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -133,15 +154,21 @@ explicitly records `on_device_validation: not_performed`.
 
 After testing a transition, open **YTMusicUltimate → Player Settings → Song
 Transitions → Copy Playback Report**. Paste the copied text when reporting a failure.
-The report identifies revision 5 and records runtime hook/capability availability,
+The report identifies revision 6 and records runtime hook/capability availability,
 the actual native player/transition-provider classes, queue compatibility, content
 and route/repeat vetoes, scheduled duration, native fade acceptance, simultaneous
 player activation, analysis fallback and tempo recovery. It additionally records
 prefetch mode/window/result, resolved playbacks, timeline delivery and the actual
 native player item's incoming fade. App-state values are
 0 = foreground, 1 = inactive and 2 = background.
+Revision 6 additionally shows the current prefetch clock, lifecycle/media state,
+media time, preparation window and resolver state. Its stages distinguish clock
+attachment, actual native resolver start, resolver completion, playable-data
+delivery and visible cover blending. The `prefetch-result` stage comes from the
+original media-fetch callback path and can remain absent when the new clock binding
+starts the same native resolver directly.
 
-This trace is bounded to 32 event counters, 32 last stage results and 32 recent entries in memory. It
+This trace is bounded to 48 event counters, 48 last stage results and 32 recent entries in memory. It
 has no polling or persistent log writes and includes no account details, song
 identifiers or media URLs. It resets when the app exits. Playback buttons remain
 the two compact toggles below Shuffle/Repeat; diagnostics add only a settings row.

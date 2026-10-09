@@ -70,6 +70,12 @@ static id objectIvar(id object, const char *name) {
     return type && type[0] == '@' ? object_getIvar(object, ivar) : nil;
 }
 
+static BOOL objectIvarAvailable(Class cls, const char *name) {
+    Ivar ivar = class_getInstanceVariable(cls, name);
+    const char *type = ivar ? ivar_getTypeEncoding(ivar) : NULL;
+    return type && type[0] == '@';
+}
+
 static NSString *videoID(id response) {
     id identifier = objectGetter(response, @"videoID");
     return [identifier isKindOfClass:NSString.class] ? identifier : nil;
@@ -112,10 +118,27 @@ static NSURL *audioURL(id response) {
     return nil;
 }
 
+static BOOL nativePrefetchConfigSupported(void) {
+    Class cls = NSClassFromString(@"YTPlaybackConfig");
+    for (NSString *name in @[@"startPlayback", @"loadAsActivePlayback"])
+        if (!YTMUTransitionMethodMatches(cls, NSSelectorFromString(name), "B", @[]) ||
+            !YTMUTransitionMethodMatches(cls, NSSelectorFromString([NSString stringWithFormat:@"set%@%@:",
+                [[name substringToIndex:1] uppercaseString], [name substringFromIndex:1]]), "v", @[@"B"])) return NO;
+    for (NSString *name in @[@"mediaStickySettings", @"startTime", @"endTime", @"initialSeekTimeOverride"])
+        if (!YTMUTransitionMethodMatches(cls, NSSelectorFromString(name), "@", @[]) ||
+            !YTMUTransitionMethodMatches(cls, NSSelectorFromString([NSString stringWithFormat:@"set%@%@:",
+                [[name substringToIndex:1] uppercaseString], [name substringFromIndex:1]]), "v", @[@"@"])) return NO;
+    return YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerPlayback"), NSSelectorFromString(@"setPlaybackConfig:"), "v", @[@"@"]);
+}
+
 BOOL YTMUTransitionsCrossfadeSupported(void) {
     static BOOL supported; static dispatch_once_t once;
     dispatch_once(&once, ^{
         supported = [NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] isEqualToString:@"9.40.2"] &&
+            nativePrefetchConfigSupported() &&
+            objectIvarAvailable(NSClassFromString(@"YTUpcomingPlaybackManager"), "_currentContentVideo") &&
+            objectIvarAvailable(NSClassFromString(@"YTUpcomingPlayerTransitionController"), "_contentVideo") &&
+            objectIvarAvailable(NSClassFromString(@"YTLocalPlaybackController"), "_upcomingPlaybackManager") &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMSettingsImpl"), NSSelectorFromString(@"isCrossfadeEnabled"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMSettingsImpl"), NSSelectorFromString(@"crossfadeDuration"), "q", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTCrossfadeTransition"), NSSelectorFromString(@"initWithDuration:"), "@", @[@"d"]) &&
@@ -144,6 +167,7 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableVolumeFading"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"musicPlaybackClientConfigIosEnableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"musicPlaybackClientConfigIosEnableMediaDrivenPrefetch"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableVolumeFading"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTHotConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enablePlayerPlaybackMigration"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTHotConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration"), "B", @[]) &&
@@ -156,6 +180,19 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"), NSSelectorFromString(@"upcomingPlaybackManager:resolvedPlayablePlaybacks:"), "v", @[@"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"), NSSelectorFromString(@"upcomingPlaybackManagerDidRequestPrefetchAfterLastUpcomingPlayback:"), "@", @[@"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"upcomingPlaybacksArray"), "@", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"setUpcomingPlaybacks:"), "v", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"setCurrentContentVideo:"), "v", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"playerPlaybackToUpcomingPlayerTransitionControllers"), "@", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"isExternalPlaybackActiveForUpcomingPlayerTransitionController:"), "B", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"isPictureInPictureActiveForUpcomingPlayerTransitionController:"), "B", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"setCurrentContentVideo:"), "v", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"upcomingPlayback"), "@", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"shouldPrefetchPlayerTransition"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"prefetchPlayerTransition"), "v", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"hasPrefetchStarted"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"hasPrefetchCompleted"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"cancelPrefetch"), "v", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlayerTransitionController"), NSSelectorFromString(@"videoResolver:didChangeFromState:toState:"), "v", @[@"@", @"q", @"q"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlaybackConfig"), NSSelectorFromString(@"prefetchWindow"), "d", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlaybackConfig"), NSSelectorFromString(@"setPrefetchWindow:"), "v", @[@"d"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"contentPlayerResponse"), "@", @[]) &&
@@ -181,7 +218,7 @@ BOOL YTMUTransitionsAutoMixSupported(void) {
     return supported;
 }
 
-NSDictionary *YTMUTransitionPreferences(void) {
+static NSDictionary *normalizedTransitionPreferences(void) {
     NSDictionary *stored = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"YTMUltimate"] ?: @{};
     NSMutableDictionary *preferences = [@{@"songTransitionsEnabled": @NO, @"songTransitionMode": @0,
                                           @"crossfadeDuration": @4, @"YTMUltimateIsEnabled": @YES} mutableCopy];
@@ -191,6 +228,31 @@ NSDictionary *YTMUTransitionPreferences(void) {
     preferences[@"crossfadeDuration"] = @(isfinite(duration) ? fmin(12, fmax(1, round(duration))) : 4);
     return preferences;
 }
+
+/* The native sequencer queries transitions frequently. Normalize preferences
+   on changes instead of copying defaults dictionaries on every playback query. */
+@interface YTMUTransitionPreferenceStore : NSObject
+@property (atomic, copy) NSDictionary *snapshot;
++ (instancetype)shared;
+- (void)refresh:(NSNotification *)notification;
+@end
+@implementation YTMUTransitionPreferenceStore
++ (instancetype)shared {
+    static YTMUTransitionPreferenceStore *store; static dispatch_once_t once;
+    dispatch_once(&once, ^{ store = [self new]; }); return store;
+}
+- (instancetype)init {
+    if ((self = [super init])) {
+        _snapshot = [normalizedTransitionPreferences() copy];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh:)
+            name:NSUserDefaultsDidChangeNotification object:nil];
+    }
+    return self;
+}
+- (void)refresh:(NSNotification *)notification { self.snapshot = normalizedTransitionPreferences(); }
+@end
+
+NSDictionary *YTMUTransitionPreferences(void) { return [YTMUTransitionPreferenceStore shared].snapshot; }
 
 void YTMUSetTransitionPreference(NSString *key, id value) {
     if (![@[@"songTransitionsEnabled", @"songTransitionMode", @"crossfadeDuration"] containsObject:key] ||
@@ -202,6 +264,7 @@ void YTMUSetTransitionPreference(NSString *key, id value) {
     else value = @([value boolValue]);
     preferences[key] = value;
     [[NSUserDefaults standardUserDefaults] setObject:preferences forKey:@"YTMUltimate"];
+    [[YTMUTransitionPreferenceStore shared] refresh:nil];
 }
 
 BOOL YTMUTransitionsRequested(void) {
@@ -258,6 +321,99 @@ BOOL YTMUTransitionsCanReuseNativeQueue(id data) {
 }
 
 static const void *YTMUPrefetchWindowKey = &YTMUPrefetchWindowKey;
+static const void *YTMUPrefetchConfigCopyKey = &YTMUPrefetchConfigCopyKey;
+static const void *YTMUPrefetchBindingKey = &YTMUPrefetchBindingKey;
+
+@interface YTMUNativePrefetchBinding : NSObject
+@property (nonatomic, weak) id manager;
+@property (nonatomic, weak) id controller;
+@end
+@implementation YTMUNativePrefetchBinding
+@end
+
+BOOL YTMUOwnsNativePrefetchBinding(id controller) {
+    return objc_getAssociatedObject(controller, YTMUPrefetchBindingKey) != nil;
+}
+
+static void detachPrefetchBinding(YTMUNativePrefetchBinding *binding) {
+    id controller = binding.controller;
+    if (!controller) return;
+    /* Unregister native time/buffer observers before cancelling an obsolete
+       resolver. This never clears prepared queue items or advances playback. */
+    ((void (*)(id, SEL, id))objc_msgSend)(controller, NSSelectorFromString(@"setCurrentContentVideo:"), nil);
+    if (boolGetter(controller, @"hasPrefetchStarted", NO) && !boolGetter(controller, @"hasPrefetchCompleted", YES))
+        ((void (*)(id, SEL))objc_msgSend)(controller, NSSelectorFromString(@"cancelPrefetch"));
+    objc_setAssociatedObject(controller, YTMUPrefetchBindingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    binding.controller = nil;
+}
+
+void YTMURefreshNativePrefetchBinding(id manager) {
+    YTMUNativePrefetchBinding *binding = objc_getAssociatedObject(manager, YTMUPrefetchBindingKey);
+    id pending = objectGetter(manager, @"upcomingPlaybacksArray");
+    id playback = [pending isKindOfClass:NSArray.class] ? [pending firstObject] : nil;
+    id table = objectGetter(manager, @"playerPlaybackToUpcomingPlayerTransitionControllers");
+    id controller = playback && [table isKindOfClass:NSMapTable.class] ? [table objectForKey:playback] : nil;
+    id transition = objectGetter(playback, @"incomingTransition");
+    BOOL enabled = YTMUTransitionsRequested() && [transition isKindOfClass:NSClassFromString(@"YTCrossfadeTransition")];
+    if (!enabled || !controller) {
+        if (binding.controller) {
+            detachPrefetchBinding(binding);
+            YTMURecordTransitionEvent(@"prefetch-clock", @"detached-disabled-or-obsolete-next-song");
+        }
+        return;
+    }
+    if (binding.controller != controller) {
+        detachPrefetchBinding(binding);
+        if (!binding) {
+            binding = [YTMUNativePrefetchBinding new]; binding.manager = manager;
+            objc_setAssociatedObject(manager, YTMUPrefetchBindingKey, binding, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        binding.controller = controller;
+        objc_setAssociatedObject(controller, YTMUPrefetchBindingKey, binding, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    /* 9.40.2's media-driven manager stores the current song, but does not pass
+       it to newly created transition controllers. Without the MFC callback the
+       resolver remains idle. Bind its existing observers to that same song. */
+    id current = objectIvar(manager, "_currentContentVideo");
+    ((void (*)(id, SEL, id))objc_msgSend)(controller, NSSelectorFromString(@"setCurrentContentVideo:"), current);
+    YTMURecordTransitionEvent(@"prefetch-clock", current ? @"immediate-next-bound-to-native-song-clock" : @"waiting-for-current-song");
+}
+
+BOOL YTMUNativeTransitionPrefetchAllowed(id controller, BOOL nativeAllowed) {
+    YTMUNativePrefetchBinding *binding = objc_getAssociatedObject(controller, YTMUPrefetchBindingKey);
+    if (!binding) return nativeAllowed;
+    if (!nativeAllowed || !YTMUTransitionsRequested()) return NO;
+    id current = objectIvar(controller, "_contentVideo");
+    id playback = objectGetter(controller, @"upcomingPlayback");
+    id pending = objectGetter(binding.manager, @"upcomingPlaybacksArray");
+    /* A callback already queued for a replaced song must not start a resolver. */
+    if (binding.controller != controller || current != objectIvar(binding.manager, "_currentContentVideo") ||
+        ![pending isKindOfClass:NSArray.class] || ![playback isEqual:[pending firstObject]]) return NO;
+    id config = objectGetter(playback, @"playbackConfig");
+    if (!YTMUShouldPrefetchMix(YES, nativeAllowed, integerGetter(current, @"mediaState", -1) == 3,
+        doubleGetter(current, @"totalMediaTime", NAN), doubleGetter(objectGetter(current, @"currentVideoTime"), @"time", NAN),
+        doubleGetter(config, @"prefetchWindow", 0))) return NO;
+    id response = objectGetter(objectGetter(objectGetter(current, @"videoData"), @"playbackData"), @"playerResponse");
+    YTMUMixContent song = responseContent(response); song.album = NULL;
+    const char *exclusion = YTMUMixContentExclusion(&song, &song);
+    if (exclusion) {
+        YTMURecordTransitionEvent(@"prefetch-policy", [NSString stringWithFormat:@"%s; type=%d; seconds=%.0f", exclusion, song.musicVideoType, song.duration]);
+        return NO;
+    }
+    /* Keep explicit endpoint vetoes and external-playback restrictions. */
+    id watch = objectGetter(objectGetter(objectGetter(playback, @"playerTransition"), @"navigationEndpoint"), @"watchEndpoint");
+    id endpointConfig = objectGetter(objectGetter(watch, @"watchEndpointSupportedPrefetchConfig"), @"sabrPrefetchEndpointConfig");
+    if (boolGetter(endpointConfig, @"disablePrefetch", NO)) {
+        YTMURecordTransitionEvent(@"prefetch-policy", @"endpoint-disabled"); return NO;
+    }
+    id manager = binding.manager;
+    if (((BOOL (*)(id, SEL, id))objc_msgSend)(manager, NSSelectorFromString(@"isExternalPlaybackActiveForUpcomingPlayerTransitionController:"), controller) ||
+        ((BOOL (*)(id, SEL, id))objc_msgSend)(manager, NSSelectorFromString(@"isPictureInPictureActiveForUpcomingPlayerTransitionController:"), controller)) {
+        YTMURecordTransitionEvent(@"prefetch-policy", @"external-playback-or-picture-in-picture"); return NO;
+    }
+    YTMURecordTransitionEvent(@"prefetch-clock", @"native-clock-window-reached");
+    return YES;
+}
 
 void YTMUPrepareUpcomingTransitionPlayback(id playback) {
     id config = objectGetter(playback, @"playbackConfig");
@@ -271,8 +427,31 @@ void YTMUPrepareUpcomingTransitionPlayback(id playback) {
     NSDictionary *prefs = YTMUTransitionPreferences();
     double window = YTMUMixPrefetchWindow(native, [prefs[@"crossfadeDuration"] doubleValue],
         [prefs[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix, enabled);
-    if (previous != window) ((void (*)(id, SEL, double))objc_msgSend)(config, NSSelectorFromString(@"setPrefetchWindow:"), window);
-    objc_setAssociatedObject(config, YTMUPrefetchWindowKey, window == native ? nil : @[@(native), @(window)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (previous != window) {
+        /* YTPlayerPlayback.hash can include its config's prefetchWindow. The
+           sequencer reuses configs that may already be keys in the upcoming
+           manager. Copy all verified native fields before assigning a window;
+           never mutate an existing key or its shared sequencer configuration. */
+        NSArray *fields = @[@(boolGetter(config, @"startPlayback", NO)), @(boolGetter(config, @"loadAsActivePlayback", NO)),
+            objectGetter(config, @"mediaStickySettings") ?: NSNull.null, objectGetter(config, @"startTime") ?: NSNull.null,
+            objectGetter(config, @"endTime") ?: NSNull.null, objectGetter(config, @"initialSeekTimeOverride") ?: NSNull.null,
+            @(window), @(native)];
+        NSArray *cached = objc_getAssociatedObject(config, YTMUPrefetchConfigCopyKey);
+        id prepared = cached.count == 2 && [cached[0] isEqual:fields] ? cached[1] : nil;
+        if (!prepared) {
+            prepared = [NSClassFromString(@"YTPlaybackConfig") new];
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(prepared, NSSelectorFromString(@"setStartPlayback:"), [fields[0] boolValue]);
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(prepared, NSSelectorFromString(@"setLoadAsActivePlayback:"), [fields[1] boolValue]);
+            NSArray *setters = @[@"setMediaStickySettings:", @"setStartTime:", @"setEndTime:", @"setInitialSeekTimeOverride:"];
+            for (NSUInteger i = 0; i < setters.count; ++i)
+                ((void (*)(id, SEL, id))objc_msgSend)(prepared, NSSelectorFromString(setters[i]), fields[i + 2] == NSNull.null ? nil : fields[i + 2]);
+            ((void (*)(id, SEL, double))objc_msgSend)(prepared, NSSelectorFromString(@"setPrefetchWindow:"), window);
+            objc_setAssociatedObject(prepared, YTMUPrefetchWindowKey, window == native ? nil : @[@(native), @(window)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            /* One reusable copy per sequencer config, bounded by its lifetime. */
+            objc_setAssociatedObject(config, YTMUPrefetchConfigCopyKey, @[fields, prepared], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        ((void (*)(id, SEL, id))objc_msgSend)(playback, NSSelectorFromString(@"setPlaybackConfig:"), prepared);
+    }
     YTMURecordTransitionEvent(@"prefetch-window", [NSString stringWithFormat:@"native=%.1f effective=%.1f seconds", native, window]);
 }
 
@@ -363,6 +542,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)preferencesChanged:(NSNotification *)notification {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self preferencesChanged:notification]; }); return; }
+    /* Notification observer order is unspecified, including master-switch
+       changes elsewhere in the tweak. Refresh before comparing snapshots. */
+    [[YTMUTransitionPreferenceStore shared] refresh:notification];
     NSDictionary *preferences = YTMUTransitionPreferences();
     if ([preferences isEqualToDictionary:self.preferences]) return;
     self.preferences = preferences;
@@ -379,6 +561,8 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     });
 }
 - (void)updateSequence {
+    id playback = objectIvar(self.playerController, "_playbackController");
+    YTMURefreshNativePrefetchBinding(objectIvar(playback, "_upcomingPlaybackManager"));
     SEL selector = NSSelectorFromString(@"updateCrossfadeTransitionInActiveSequence");
     if (YTMUTransitionMethodMatches([self.sequencer class], selector, "v", @[]))
         ((void (*)(id, SEL))objc_msgSend)(self.sequencer, selector);
@@ -570,6 +754,8 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         (long)UIApplication.sharedApplication.applicationState]);
     self.nativeOverlapPlayer = multiPlayer;
     self.artworkRunning = self.outgoingArtwork != nil;
+    if ([self.preferences[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix)
+        YTMURecordTransitionEvent(@"artwork", self.artworkRunning ? @"visible-blend-started" : @"cover-not-available-or-not-visible");
     if (self.artworkRunning) [self resumeMix];
     if (self.plan.kind != YTMUMixAutoMix ||
         [self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix ||
@@ -667,12 +853,21 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 - (NSString *)diagnosticsSnapshot {
     id current = objectGetter(self.playerController, @"contentPlayerResponse");
     id nativeController = objectIvar(self.playerController, "_playbackController");
-    return [NSString stringWithFormat:@"Sequencer: %@; player: %@; playback: %@; current response: %@\nNext song known: %@; repeat-one: %@; analysis queued: %lu; cache: %lu; tempo active: %@; paused: %@",
+    id manager = objectIvar(nativeController, "_upcomingPlaybackManager");
+    YTMUNativePrefetchBinding *binding = objc_getAssociatedObject(manager, YTMUPrefetchBindingKey);
+    id clock = objectIvar(binding.controller, "_contentVideo");
+    id resolver = objectIvar(binding.controller, "_videoResolver");
+    id config = objectGetter(objectGetter(binding.controller, @"upcomingPlayback"), @"playbackConfig");
+    return [NSString stringWithFormat:@"Sequencer: %@; player: %@; playback: %@; current response: %@\nNext song known: %@; repeat-one: %@; analysis queued: %lu; cache: %lu; tempo active: %@; paused: %@\nPrefetch clock: %@; lifecycle: %lld; media-state: %lld; time: %.1f/%.1f; window: %.1f s; resolver-state: %lld",
         [self.sequencer class], [self.playerController class], [nativeController class], [current class],
         objectGetter(self.sequencer, @"upcomingVideoID") ? @"yes" : @"no",
         boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES) ? @"yes/unknown" : @"no",
         (unsigned long)self.analysisQueue.operationCount, (unsigned long)self.cacheKeys.count,
-        self.tempoSession ? @"yes" : @"no", self.playbackPaused ? @"yes" : @"no"];
+        self.tempoSession ? @"yes" : @"no", self.playbackPaused ? @"yes" : @"no",
+        clock ? @"bound" : @"unbound", (long long)integerGetter(clock, @"lifecycleState", -1),
+        (long long)integerGetter(clock, @"mediaState", -1), doubleGetter(objectGetter(clock, @"currentVideoTime"), @"time", 0),
+        doubleGetter(clock, @"totalMediaTime", 0), doubleGetter(config, @"prefetchWindow", 0),
+        (long long)integerGetter(resolver, @"state", -1)];
 }
 - (void)sequenceChanged {
     if (![NSThread isMainThread]) {
@@ -739,7 +934,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     if ([self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix ||
         UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     NSArray<NSString *> *pair = [self.pair componentsSeparatedByString:@"/"];
-    if (pair.count != 2) return;
+    if (pair.count != 2) { YTMURecordTransitionEvent(@"artwork", @"missing-current-next-pair"); return; }
     id player = objectGetter(context, @"player");
     SEL timeSelector = NSSelectorFromString(@"currentTime");
     if (!YTMUTransitionMethodMatches([player class], timeSelector, "{?=ddd}", @[])) return;
@@ -768,6 +963,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         cover.userInteractionEnabled = NO; cover.accessibilityElementsHidden = YES;
         cover.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         self.outgoingArtwork = cover; [thumbnail addSubview:cover];
+        YTMURecordTransitionEvent(@"artwork", [NSString stringWithFormat:@"outgoing-cover-captured; duration=%.2f seconds", duration]);
         return;
     }
     [self cancelArtwork];
@@ -793,7 +989,10 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     if (!self.outgoingArtwork || view != self.artworkThumbnail ||
         (!self.artworkIncomingAssigned && ![objectGetter(self.artworkController, @"currentVideoID") isEqual:self.artworkIncomingID])) return;
     if (![objectGetter(view, @"image") isKindOfClass:UIImage.class]) return;
-    if (!self.artworkIncomingLoaded) self.artworkRevealStart = self.artworkProgress;
+    if (!self.artworkIncomingLoaded) {
+        self.artworkRevealStart = self.artworkProgress;
+        YTMURecordTransitionEvent(@"artwork", @"native-incoming-cover-loaded");
+    }
     self.artworkIncomingLoaded = YES;
     [self.artworkThumbnail bringSubviewToFront:self.outgoingArtwork];
 }
@@ -815,7 +1014,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     double elapsed = time.mediaTime - self.artworkStartTime;
     if (!isfinite(elapsed) || elapsed < -0.1) { [self cancelArtwork]; return NO; }
     self.artworkProgress = fmin(1, fmax(self.artworkProgress, elapsed / self.artworkDuration));
-    if (self.artworkProgress >= 1) { [self cancelArtwork]; return NO; }
+    if (self.artworkProgress >= 1) {
+        YTMURecordTransitionEvent(@"artwork", @"visible-blend-completed"); [self cancelArtwork]; return NO;
+    }
     /* Wait for real incoming art. A late image fades over the remaining overlap
        instead of exposing the loader's placeholder or using a wall-clock delay. */
     if (self.artworkIncomingLoaded)

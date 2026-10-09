@@ -54,6 +54,10 @@ static BOOL YTMUOwnsTransitions(void) {
 - (BOOL)musicPlaybackClientConfigIosEnableCrossfade {
     return YTMUOwnsTransitions() ? YES : %orig;
 }
+- (BOOL)musicPlaybackClientConfigIosEnableMediaDrivenPrefetch {
+    /* The watch controller reads this before constructing the main player. */
+    return YTMUOwnsTransitions() ? YES : %orig;
+}
 - (BOOL)iosPlayerClientSharedConfigEnableVolumeFading {
     return YTMUOwnsTransitions() ? YES : %orig;
 }
@@ -272,7 +276,16 @@ static BOOL YTMUOwnsTransitions(void) {
 
 %group TransitionUpcomingPlayback
 %hook YTUpcomingPlaybackManager
+- (void)setUpcomingPlaybacks:(id)playbacks {
+    %orig;
+    YTMURefreshNativePrefetchBinding(self);
+}
+- (void)setCurrentContentVideo:(id)video {
+    %orig;
+    YTMURefreshNativePrefetchBinding(self);
+}
 - (void)upcomingPlayerTransitionController:(id)controller didFetchUpcomingPlayablePlaybackData:(id)data {
+    if (YTMUTransitionsRequested()) YTMURecordTransitionEvent(@"prefetch-ready", @"native-resolver-returned-playable-data");
     %orig;
     dispatch_async(dispatch_get_main_queue(), ^{
         [[YTMUSongTransitionCoordinator shared] observeUpcomingPlaybackData:data];
@@ -288,6 +301,22 @@ static BOOL YTMUOwnsTransitions(void) {
             code >= 0 && code < (NSInteger)reasons.count ? reasons[code] : @"unknown-native-result"]);
     }
     return result;
+}
+%end
+%hook YTUpcomingPlayerTransitionController
+- (BOOL)shouldPrefetchPlayerTransition {
+    BOOL original = %orig;
+    return YTMUNativeTransitionPrefetchAllowed(self, original);
+}
+- (void)prefetchPlayerTransition {
+    if (YTMUOwnsNativePrefetchBinding(self))
+        YTMURecordTransitionEvent(@"prefetch-start", @"native-clock-started-next-song-resolver");
+    %orig;
+}
+- (void)videoResolver:(id)resolver didChangeFromState:(NSInteger)previous toState:(NSInteger)state {
+    if (YTMUOwnsNativePrefetchBinding(self))
+        YTMURecordTransitionEvent(@"resolver-state", [NSString stringWithFormat:@"%ld -> %ld", (long)previous, (long)state]);
+    %orig;
 }
 %end
 %end

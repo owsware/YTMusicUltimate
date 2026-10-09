@@ -104,6 +104,7 @@ class MachO:
     def classes(self):
         size, offset = self.sections.get("__objc_classlist", (0, 0))
         result = {}
+        self.class_ivars = {}
         for at in range(offset, offset + size, 8):
             cls = self.mapped(self.pointer(at))
             ro = self.mapped(self.pointer(cls + 32) & ~7)
@@ -111,7 +112,19 @@ class MachO:
             meta = self.mapped(self.pointer(cls))
             meta_ro = self.mapped(self.pointer(meta + 32) & ~7)
             methods.update({"+" + name: types for name, types in self.methods(self.pointer(meta_ro + 32)).items()})
-            result[self.string(self.pointer(ro + 24))] = methods
+            name = self.string(self.pointer(ro + 24))
+            result[name] = methods
+            ivars = self.pointer(ro + 48)
+            fields = {}
+            if ivars:
+                start = self.mapped(ivars)
+                stride, count = struct.unpack_from("<II", self.data, start)
+                if stride < 32 or count > 10000:
+                    raise ValueError("Invalid Objective-C ivar list")
+                for i in range(count):
+                    at = start + 8 + i * stride
+                    fields[self.string(self.pointer(at + 8))] = self.string(self.pointer(at + 16))
+            self.class_ivars[name] = fields
         return result
 
 
@@ -143,6 +156,17 @@ EXPECTED_METHODS = {
         "upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:": "v32@0:8@16@24",
         "maybeStartPrefetchForPlayback:isFirstUpcomingPlayback:": "@28@0:8@16B24",
         "upcomingPlaybacksArray": "@16@0:8",
+        "setUpcomingPlaybacks:": "v24@0:8@16",
+        "setCurrentContentVideo:": "v24@0:8@16",
+        "playerPlaybackToUpcomingPlayerTransitionControllers": "@16@0:8",
+        "isExternalPlaybackActiveForUpcomingPlayerTransitionController:": "B24@0:8@16",
+        "isPictureInPictureActiveForUpcomingPlayerTransitionController:": "B24@0:8@16",
+    },
+    "YTUpcomingPlayerTransitionController": {
+        "setCurrentContentVideo:": "v24@0:8@16", "upcomingPlayback": "@16@0:8",
+        "shouldPrefetchPlayerTransition": "B16@0:8", "prefetchPlayerTransition": "v16@0:8",
+        "hasPrefetchStarted": "B16@0:8", "hasPrefetchCompleted": "B16@0:8",
+        "cancelPrefetch": "v16@0:8", "videoResolver:didChangeFromState:toState:": "v40@0:8@16q24q32",
     },
     "YTUpcomingPlaybackManagerPrefetchResultInfo": {"result": "q16@0:8"},
     "YTPlayerSequencerDefaultPlaybackItemHandler": {
@@ -158,8 +182,16 @@ EXPECTED_METHODS = {
         "setPlaybacks:reloadContext:": "v32@0:8@16@24",
         "createPlayerItemForVideoController:reloadContext:": "@32@0:8@16@24",
     },
-    "YTPlaybackConfig": {"prefetchWindow": "d16@0:8", "setPrefetchWindow:": "v24@0:8d16"},
-    "YTPlayerPlayback": {"incomingTransition": "@16@0:8", "playbackConfig": "@16@0:8"},
+    "YTPlaybackConfig": {
+        "prefetchWindow": "d16@0:8", "setPrefetchWindow:": "v24@0:8d16",
+        "startPlayback": "B16@0:8", "setStartPlayback:": "v20@0:8B16",
+        "loadAsActivePlayback": "B16@0:8", "setLoadAsActivePlayback:": "v20@0:8B16",
+        "mediaStickySettings": "@16@0:8", "setMediaStickySettings:": "v24@0:8@16",
+        "startTime": "@16@0:8", "setStartTime:": "v24@0:8@16",
+        "endTime": "@16@0:8", "setEndTime:": "v24@0:8@16",
+        "initialSeekTimeOverride": "@16@0:8", "setInitialSeekTimeOverride:": "v24@0:8@16",
+    },
+    "YTPlayerPlayback": {"incomingTransition": "@16@0:8", "playbackConfig": "@16@0:8", "setPlaybackConfig:": "v24@0:8@16"},
     "YTSingleVideoController": {"singleVideo": "@16@0:8"},
     "YTSingleVideo": {"playerPlayback": "@16@0:8", "setPlayerPlayback:": "v24@0:8@16"},
     "MLHAMMultiPlayerItem": {"incomingTransition": "@16@0:8"},
@@ -179,6 +211,7 @@ EXPECTED_METHODS = {
     "YTColdConfig": {
         "iosPlayerClientSharedConfigEnableCrossfade": "B16@0:8",
         "musicPlaybackClientConfigIosEnableCrossfade": "B16@0:8",
+        "musicPlaybackClientConfigIosEnableMediaDrivenPrefetch": "B16@0:8",
         "iosPlayerClientSharedConfigEnableVolumeFading": "B16@0:8",
     },
     "MLPlayerPoolImpl": {"acquireQueuePlayerWithStickySettings:mediaPlayerResources:": "@32@0:8@16@24"},
@@ -213,6 +246,12 @@ EXPECTED_METHODS = {
     },
 }
 
+EXPECTED_IVARS = {
+    "YTUpcomingPlaybackManager": {"_currentContentVideo": '@"<YTSingleVideoObservable>"'},
+    "YTUpcomingPlayerTransitionController": {"_contentVideo": '@"<YTSingleVideoObservable>"'},
+    "YTLocalPlaybackController": {"_upcomingPlaybackManager": '@"YTUpcomingPlaybackManager"'},
+}
+
 
 def read_app(archive):
     infos = [name for name in archive.namelist()
@@ -244,9 +283,14 @@ def verify(input_path, output_path=None):
             for method, types in methods.items():
                 if classes.get(cls, {}).get(method) != types:
                     mismatches.append(f"{cls}.{method}")
+        for cls, fields in EXPECTED_IVARS.items():
+            for name, types in fields.items():
+                if binary.class_ivars.get(cls, {}).get(name) != types:
+                    mismatches.append(f"{cls}.{name}")
         if mismatches:
             raise ValueError("Playback ABI mismatch: " + ", ".join(mismatches))
         report["verified_private_methods"] = sum(len(methods) for methods in EXPECTED_METHODS.values())
+        report["verified_private_ivars"] = sum(len(fields) for fields in EXPECTED_IVARS.values())
     else:
         print("::warning::This app version is outside the verified 9.40.2 profile; song transitions stay unavailable.")
     if output_path:
@@ -269,7 +313,9 @@ def verify(input_path, output_path=None):
                            b"prepareArtworkForOutgoingContext:clip:", b"YTMUNativeTempoSession",
                            b"YTMUTransitionTrace", b"canEnqueueUpcomingPlaybacks", b"iosPlayerClientSharedConfigEnableVolumeFading",
                            b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration", b"setPrefetchWindow:",
-                           b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:", b"transitions r5"):
+                           b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:",
+                           b"YTMUNativePrefetchBinding", b"YTMUTransitionPreferenceStore",
+                           b"musicPlaybackClientConfigIosEnableMediaDrivenPrefetch", b"shouldPrefetchPlayerTransition", b"transitions r6"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()

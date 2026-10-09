@@ -29,7 +29,7 @@ void YTMURecordTransitionEvent(NSString *event, NSString *detail) {
     NSString *line = [NSString stringWithFormat:@"%@: %@", event, detail ?: @""];
     if (line.length > 384) line = [line substringToIndex:384];
     @synchronized (value) {
-        if (value.counts[event] || value.counts.count < 32) {
+        if (value.counts[event] || value.counts.count < 48) {
             value.counts[event] = @(MIN((NSUInteger)1000000, [value.counts[event] unsignedIntegerValue] + 1));
             /* Preserve each stage when later transport/queue events fill the ring. */
             value.stages[event] = line;
@@ -46,7 +46,7 @@ NSString *YTMUTransitionDiagnosticsReport(void) {
     YTMUTransitionTrace *value = trace();
     NSDictionary *prefs = YTMUTransitionPreferences();
     NSMutableString *report = [NSMutableString stringWithFormat:
-        @"YTMusicUltimate transitions r5\nYouTube Music %@; iOS %@\nCrossfade ABI: %@; AutoMix ABI: %@\nEnabled: %@; mode: %@; duration: %@ s; Low Power: %@\n",
+        @"YTMusicUltimate transitions r6\nYouTube Music %@; iOS %@\nCrossfade ABI: %@; AutoMix ABI: %@\nEnabled: %@; mode: %@; duration: %@ s; Low Power: %@\n",
         NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown",
         UIDevice.currentDevice.systemVersion,
         YTMUTransitionsCrossfadeSupported() ? @"verified" : @"unavailable",

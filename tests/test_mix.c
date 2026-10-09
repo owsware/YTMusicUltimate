@@ -76,6 +76,33 @@ int main(void) {
     assert(YTMUMixPrefetchWindow(-1, 40, 0, 1) == 20);
     for (int seconds = 1; seconds <= 12; ++seconds)
         assert(YTMUMixPrefetchWindow(0, seconds, 0, 1) > seconds);
+    /* Drive a simulated native media clock: no early/idle preparation, exactly
+       one resolver launch, and no dependence on foreground or wall-clock time. */
+    int starts = 0, resolved = 0;
+    for (int second = 0; second <= 240; ++second) {
+        if (YTMUShouldPrefetchMix(1, !resolved, 1, 240, second, 32)) {
+            assert(second == 208); ++starts; resolved = 1;
+        }
+    }
+    assert(starts == 1);
+    assert(!YTMUShouldPrefetchMix(0, 1, 1, 240, 225, 32));
+    assert(!YTMUShouldPrefetchMix(1, 0, 1, 240, 225, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 0, 240, 225, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, 200, 90));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, 240, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, 241, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, -1, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, NAN, 225, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, INFINITY, 225, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, NAN, 32));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, 225, NAN));
+    assert(YTMUShouldPrefetchMix(1, 1, 1, 5, 0, 12));
+    assert(!YTMUShouldPrefetchMix(1, 1, 1, 2, 0, 12));
+    for (int seconds = 1; seconds <= 12; ++seconds) {
+        double lead = YTMUMixPrefetchWindow(0, seconds, 0, 1);
+        assert(YTMUShouldPrefetchMix(1, 1, 1, 240, 240 - lead, lead));
+        assert(!YTMUShouldPrefetchMix(1, 1, 1, 240, 239 - lead, lead));
+    }
     float *pcm = calloc(SAMPLES, sizeof(float)); assert(pcm);
     YTMUMixAnalysis silence, outgoing, incoming;
     assert(YTMUAnalysePCM(pcm, SAMPLES, &silence));

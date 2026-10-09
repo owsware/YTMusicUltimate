@@ -229,3 +229,13 @@ double YTMUMixPrefetchWindow(double nativeWindow, double crossfadeDuration, int 
     double minimum = autoMix ? 32 : fmax(12, duration + 8);
     return fmax(isfinite(nativeWindow) && nativeWindow >= 0 ? nativeWindow : 0, minimum);
 }
+
+int YTMUShouldPrefetchMix(int enabled, int nativeEligible, int playing,
+                        double duration, double mediaTime, double window) {
+    if (!enabled || !nativeEligible || !playing || !isfinite(duration) || duration < 3 ||
+        !isfinite(mediaTime) || mediaTime < 0 || !isfinite(window) || window <= 0) return 0;
+    double remaining = duration - mediaTime;
+    /* A server minimum-buffer threshold can otherwise fetch early in a song.
+       Our additional preparation stays within 32 seconds, even for that path. */
+    return remaining > 0 && remaining <= fmin(window, 32);
+}

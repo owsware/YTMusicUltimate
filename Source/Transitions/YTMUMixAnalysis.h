@@ -46,5 +46,8 @@ YTMUMixPlan YTMUPlanMix(const YTMUMixAnalysis *outro, const YTMUMixAnalysis *int
 double YTMUMixRateAtProgress(double initialRate, double progress);
 /* Additional native prefetch lead is bounded; never shorten a native window. */
 double YTMUMixPrefetchWindow(double nativeWindow, double crossfadeDuration, int autoMix, int enabled);
+/* A native clock observer may prepare only a playing, finite song near its end. */
+int YTMUShouldPrefetchMix(int enabled, int nativeEligible, int playing,
+                        double duration, double mediaTime, double window);
 
 #endif
