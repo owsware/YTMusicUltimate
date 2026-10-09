@@ -65,6 +65,17 @@ static void test_content_policy(void) {
 
 int main(void) {
     test_content_policy();
+    /* Regression: online playback's native zero window prevented preparing the
+       next song before overlap. Additional lead stays bounded to 32 seconds. */
+    assert(YTMUMixPrefetchWindow(0, 4, 0, 1) == 12);
+    assert(YTMUMixPrefetchWindow(0, 12, 0, 1) == 20);
+    assert(YTMUMixPrefetchWindow(0, 4, 1, 1) == 32);
+    assert(YTMUMixPrefetchWindow(90, 4, 1, 1) == 90);
+    assert(YTMUMixPrefetchWindow(0, 12, 1, 0) == 0);
+    assert(YTMUMixPrefetchWindow(NAN, NAN, 0, 1) == 12);
+    assert(YTMUMixPrefetchWindow(-1, 40, 0, 1) == 20);
+    for (int seconds = 1; seconds <= 12; ++seconds)
+        assert(YTMUMixPrefetchWindow(0, seconds, 0, 1) > seconds);
     float *pcm = calloc(SAMPLES, sizeof(float)); assert(pcm);
     YTMUMixAnalysis silence, outgoing, incoming;
     assert(YTMUAnalysePCM(pcm, SAMPLES, &silence));

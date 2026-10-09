@@ -30,6 +30,17 @@ independently of the saved on/off toggle. Both `enableCrossfade` and
 `MLHAMMultiPlayer`, while `YTQueuePlaybackTimelineManager` uses the second to
 create the audio transition provider and transition effects. Earlier builds did
 not enable the second flag. Transition scheduling stays off until a mode is enabled.
+Revision 5 also enables the verified `enablePlayerPlaybackMigration` flag. The
+native timeline manager reads the incoming crossfade from `YTSingleVideo.playerPlayback`;
+the legacy path stores only the playback configuration and loses that transition.
+Both native playback and sequencer-item-handler constructors select media-driven
+prefetch, keeping the prepared `YTPlayerPlayback` intact through the upcoming manager.
+Online songs otherwise default to a zero-second prefetch window when the endpoint
+has no hint. The immediate next song now gets at least 12–20 seconds of prefetch
+lead for Crossfade, or 32 seconds for AutoMix's bounded analysis. A longer native
+window is preserved. The original window is restored when transitions are disabled,
+and native changes to the window are respected. No additional upcoming songs are
+requested beyond that immediate next song while transitions are enabled.
 An eligible song may reuse the native queue despite the server's preference to
 create a new player for the next song, only when YouTube's own gapless check passes
 and the response has no preroll/interstitial ads. Forced stream incompatibility
@@ -39,10 +50,11 @@ playbacks through the native debounced queue scheduler.
 Videos, live streams, podcasts, casting, picture-in-picture and repeat-one bypass
 mixing. User-selected playback speeds other than 1× suppress tempo adjustment.
 
-**Status: all three earlier device builds reported no audible overlap. Revision 4
-corrects the missing native volume-fading activation and additional queue/planning
-gates, and adds a playback report. Audible playback, background recovery and
-artwork synchronization still require a device test; AutoMix is unverified.**
+**Status: all four earlier device builds reported no audible overlap. The revision 4
+report confirms the native multi-player and fade provider load, but the engine still
+has only one audio context and no incoming fade. Revision 5 corrects native prefetch
+mode, prefetch lead time and playback-object migration. Audible playback, background
+recovery and artwork synchronization still require a device test; AutoMix is unverified.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -121,13 +133,15 @@ explicitly records `on_device_validation: not_performed`.
 
 After testing a transition, open **YTMusicUltimate → Player Settings → Song
 Transitions → Copy Playback Report**. Paste the copied text when reporting a failure.
-The report identifies revision 4 and records runtime hook/capability availability,
+The report identifies revision 5 and records runtime hook/capability availability,
 the actual native player/transition-provider classes, queue compatibility, content
 and route/repeat vetoes, scheduled duration, native fade acceptance, simultaneous
-player activation, analysis fallback and tempo recovery. App-state values are
+player activation, analysis fallback and tempo recovery. It additionally records
+prefetch mode/window/result, resolved playbacks, timeline delivery and the actual
+native player item's incoming fade. App-state values are
 0 = foreground, 1 = inactive and 2 = background.
 
-This trace is bounded to 32 event counters and 32 recent entries in memory. It
+This trace is bounded to 32 event counters, 32 last stage results and 32 recent entries in memory. It
 has no polling or persistent log writes and includes no account details, song
 identifiers or media URLs. It resets when the app exits. Playback buttons remain
 the two compact toggles below Shuffle/Repeat; diagnostics add only a settings row.

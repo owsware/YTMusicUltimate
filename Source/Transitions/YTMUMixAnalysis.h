@@ -44,5 +44,7 @@ YTMUMixPlan YTMUPlanMix(const YTMUMixAnalysis *outro, const YTMUMixAnalysis *int
                       double outgoingDuration, double incomingDuration,
                       double crossfadeDuration, int pitchPreserving, int sequentialAlbum);
 double YTMUMixRateAtProgress(double initialRate, double progress);
+/* Additional native prefetch lead is bounded; never shorten a native window. */
+double YTMUMixPrefetchWindow(double nativeWindow, double crossfadeDuration, int autoMix, int enabled);
 
 #endif

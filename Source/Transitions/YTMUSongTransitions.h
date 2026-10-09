@@ -11,6 +11,8 @@ void YTMUSetTransitionPreference(NSString *key, id value);
 BOOL YTMUTransitionsRequested(void);
 BOOL YTMUTransitionsAllowContentPair(id current, id upcoming);
 BOOL YTMUTransitionsCanReuseNativeQueue(id playerData);
+void YTMUPrepareUpcomingTransitionPlayback(id playback);
+void YTMURecordNativeTransitionItem(id item, id videoController);
 void YTMURecordTransitionEvent(NSString *event, NSString *detail);
 NSString *YTMUTransitionDiagnosticsReport(void);
 NSString *YTMUTransitionsAvailability(void);

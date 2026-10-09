@@ -37,7 +37,7 @@ class DeliveryTests(unittest.TestCase):
         self.output = Path(self.temp.name) / "output.ipa"
         self.archive(self.input)
 
-    def archive(self, path, injected=False, resources=True, code=True, version="other", encrypted=False):
+    def archive(self, path, injected=False, resources=True, code=True, version="other", encrypted=False, r5=True):
         root = "Payload/Test.app/"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(root + "Info.plist", plistlib.dumps({
@@ -50,7 +50,10 @@ class DeliveryTests(unittest.TestCase):
                                  b"iosPlayerClientSharedConfigEnableCrossfade\0musicPlaybackClientConfigIosEnableCrossfade\0"
                                  b"prepareArtworkForOutgoingContext:clip:\0YTMUNativeTempoSession\0"
                                  b"YTMUTransitionTrace\0canEnqueueUpcomingPlaybacks\0"
-                                 b"iosPlayerClientSharedConfigEnableVolumeFading" if code else b"old tweak")
+                                 b"iosPlayerClientSharedConfigEnableVolumeFading\0" +
+                                 (b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration\0setPrefetchWindow:\0"
+                                  b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:\0transitions r5"
+                                  if r5 else b"transitions r4") if code else b"old tweak")
                 if resources:
                     archive.writestr(root + "YTMusicUltimate.bundle/en.lproj/Localizable.strings",
                                      b'"SONG_TRANSITIONS" = "Song Transitions";\n"AUTOMIX" = "AutoMix";')
@@ -81,6 +84,11 @@ class DeliveryTests(unittest.TestCase):
     def test_old_tweak_is_rejected(self):
         self.archive(self.output, injected=True, code=False)
         with self.assertRaisesRegex(ValueError, "code missing"):
+            self.check(self.input, self.output)
+
+    def test_failed_r4_build_is_rejected(self):
+        self.archive(self.output, injected=True, r5=False)
+        with self.assertRaisesRegex(ValueError, "EnablePlayerPlaybackMigration"):
             self.check(self.input, self.output)
 
     def test_version_changed_during_injection(self):

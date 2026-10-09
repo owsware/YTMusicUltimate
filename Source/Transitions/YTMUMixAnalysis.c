@@ -220,3 +220,12 @@ double YTMUMixRateAtProgress(double initialRate, double progress) {
     double smooth = t * t * (3 - 2 * t);
     return 1 + (clamp(initialRate, 0.94, 1.06) - 1) * (1 - smooth);
 }
+
+double YTMUMixPrefetchWindow(double nativeWindow, double crossfadeDuration, int autoMix, int enabled) {
+    if (!enabled) return nativeWindow;
+    double duration = clamp(isfinite(crossfadeDuration) ? crossfadeDuration : 4, 1, 12);
+    /* Crossfade needs time to resolve/buffer before overlap. AutoMix also needs
+       the two bounded eight-second analysis jobs before its final 12 seconds. */
+    double minimum = autoMix ? 32 : fmax(12, duration + 8);
+    return fmax(isfinite(nativeWindow) && nativeWindow >= 0 ? nativeWindow : 0, minimum);
+}

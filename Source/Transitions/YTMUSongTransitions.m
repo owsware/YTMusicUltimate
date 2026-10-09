@@ -145,6 +145,19 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"musicPlaybackClientConfigIosEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableVolumeFading"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTHotConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enablePlayerPlaybackMigration"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTHotConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerSequencerDefaultPlaybackItemHandler"),
+                NSSelectorFromString(@"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:"), "@", @[@"@", @"@", @"B"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"),
+                NSSelectorFromString(@"initWithParentResponder:overlayFactory:playerView:playbackControllerDelegate:viewportSizeProvider:recompositeProvider:shouldDelayAdsPlaybackCoordinatorCreation:shouldEnableMediaDrivenPrefetch:enablePictureInPictureSupport:"),
+                "@", @[@"@", @"@", @"@", @"@", @"@", @"@", @"B", @"B", @"B"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"), NSSelectorFromString(@"setUpcomingPlayerPlaybacks:"), "v", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"), NSSelectorFromString(@"upcomingPlaybackManager:resolvedPlayablePlaybacks:"), "v", @[@"@", @"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTLocalPlaybackController"), NSSelectorFromString(@"upcomingPlaybackManagerDidRequestPrefetchAfterLastUpcomingPlayback:"), "@", @[@"@"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"), NSSelectorFromString(@"upcomingPlaybacksArray"), "@", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTPlaybackConfig"), NSSelectorFromString(@"prefetchWindow"), "d", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTPlaybackConfig"), NSSelectorFromString(@"setPrefetchWindow:"), "v", @[@"d"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"contentPlayerResponse"), "@", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"shouldPlaybackController:applyTransitionEffect:currentPlayerResponse:upcomingPlayerResponse:"), "B", @[@"@", @"@", @"@", @"@"]);
     });
@@ -242,6 +255,34 @@ BOOL YTMUTransitionsCanReuseNativeQueue(id data) {
     song.album = NULL;
     return YTMUAllowsMixContentPair(&song, &song) && boolGetter(data, @"canBeEnqueuedGaplessly", NO) &&
         !boolGetter(data, @"hasPrerollAds", YES) && integerGetter(data, @"interstitialPodsArray_Count", -1) == 0;
+}
+
+static const void *YTMUPrefetchWindowKey = &YTMUPrefetchWindowKey;
+
+void YTMUPrepareUpcomingTransitionPlayback(id playback) {
+    id config = objectGetter(playback, @"playbackConfig");
+    if (!YTMUTransitionMethodMatches([config class], NSSelectorFromString(@"setPrefetchWindow:"), "v", @[@"d"])) return;
+    double previous = doubleGetter(config, @"prefetchWindow", 0);
+    NSArray<NSNumber *> *saved = objc_getAssociatedObject(config, YTMUPrefetchWindowKey);
+    double native = saved.count == 2 && previous == saved[1].doubleValue ? saved[0].doubleValue : previous;
+    id transition = objectGetter(playback, @"incomingTransition");
+    BOOL enabled = YTMUTransitionsRequested() && [transition isKindOfClass:NSClassFromString(@"YTCrossfadeTransition")];
+    if (!enabled && !saved) return;
+    NSDictionary *prefs = YTMUTransitionPreferences();
+    double window = YTMUMixPrefetchWindow(native, [prefs[@"crossfadeDuration"] doubleValue],
+        [prefs[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix, enabled);
+    if (previous != window) ((void (*)(id, SEL, double))objc_msgSend)(config, NSSelectorFromString(@"setPrefetchWindow:"), window);
+    objc_setAssociatedObject(config, YTMUPrefetchWindowKey, window == native ? nil : @[@(native), @(window)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    YTMURecordTransitionEvent(@"prefetch-window", [NSString stringWithFormat:@"native=%.1f effective=%.1f seconds", native, window]);
+}
+
+void YTMURecordNativeTransitionItem(id item, id videoController) {
+    if (!YTMUTransitionsRequested()) return;
+    id playback = objectGetter(objectGetter(videoController, @"singleVideo"), @"playerPlayback");
+    id source = objectGetter(playback, @"incomingTransition");
+    id effect = objectGetter(item, @"incomingTransition");
+    YTMURecordTransitionEvent(@"player-item", [NSString stringWithFormat:@"playback=%@ source=%@ item=%@ effect=%@ fade=%.2f seconds",
+        [playback class], [source class], [item class], [effect class], doubleGetter(effect, @"duration", 0)]);
 }
 
 NSString *YTMUTransitionsAvailability(void) {

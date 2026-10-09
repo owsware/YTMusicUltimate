@@ -127,7 +127,8 @@ EXPECTED_METHODS = {
         "isLoopingOnSingleItemEnabled": "B16@0:8",
         "setSequenceForTapNextOrTapPrevWithPlayerTransition:playbackConfig:": "v32@0:8@16@24",
     },
-    "YTCrossfadeTransition": {"initWithDuration:": "@24@0:8d16"},
+    "YTCrossfadeTransition": {"initWithDuration:": "@24@0:8d16", "duration": "d16@0:8"},
+    "MLAudioCrossfadeTransition": {"duration": "d16@0:8"},
     "MLHAMMultiPlayer": {
         "spawnCrossfadeWithActiveContext:activeClip:nextContext:": "v40@0:8@16@24@32",
         "pauseWithStoppageReason:": "v20@0:8i16", "play": "v16@0:8", "setRate:": "v20@0:8f16",
@@ -138,7 +139,32 @@ EXPECTED_METHODS = {
         "shouldApplyTransitionEffect:previousClip:toClip:": "B40@0:8@16@24@32",
     },
     "MLHAMQueuePlayer": {"setRate:": "v20@0:8f16", "rate": "f16@0:8", "currentTime": "{?=ddd}16@0:8", "playerQueue": "@16@0:8"},
-    "YTUpcomingPlaybackManager": {"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:": "v32@0:8@16@24"},
+    "YTUpcomingPlaybackManager": {
+        "upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:": "v32@0:8@16@24",
+        "maybeStartPrefetchForPlayback:isFirstUpcomingPlayback:": "@28@0:8@16B24",
+        "upcomingPlaybacksArray": "@16@0:8",
+    },
+    "YTUpcomingPlaybackManagerPrefetchResultInfo": {"result": "q16@0:8"},
+    "YTPlayerSequencerDefaultPlaybackItemHandler": {
+        "initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:": "@36@0:8@16@24B32",
+    },
+    "YTLocalPlaybackController": {
+        "initWithParentResponder:overlayFactory:playerView:playbackControllerDelegate:viewportSizeProvider:recompositeProvider:shouldDelayAdsPlaybackCoordinatorCreation:shouldEnableMediaDrivenPrefetch:enablePictureInPictureSupport:": "@76@0:8@16@24@32@40@48@56B64B68B72",
+        "setUpcomingPlayerPlaybacks:": "v24@0:8@16",
+        "upcomingPlaybackManager:resolvedPlayablePlaybacks:": "v32@0:8@16@24",
+        "upcomingPlaybackManagerDidRequestPrefetchAfterLastUpcomingPlayback:": "@24@0:8@16",
+    },
+    "YTQueuePlaybackTimelineManager": {
+        "setPlaybacks:reloadContext:": "v32@0:8@16@24",
+        "createPlayerItemForVideoController:reloadContext:": "@32@0:8@16@24",
+    },
+    "YTPlaybackConfig": {"prefetchWindow": "d16@0:8", "setPrefetchWindow:": "v24@0:8d16"},
+    "YTPlayerPlayback": {"incomingTransition": "@16@0:8", "playbackConfig": "@16@0:8"},
+    "YTSingleVideoController": {"singleVideo": "@16@0:8"},
+    "YTSingleVideo": {"playerPlayback": "@16@0:8", "setPlayerPlayback:": "v24@0:8@16"},
+    "MLHAMMultiPlayerItem": {"incomingTransition": "@16@0:8"},
+    "YTHotConfigIosPlayerClientSharedConfigImpl": {"enablePlayerPlaybackMigration": "B16@0:8"},
+    "YTHotConfig": {"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration": "B16@0:8"},
     "HAMSBARAudioTrackRenderer": {"underlyingRenderer": "@16@0:8", "createRendererAndReturnError:": "B24@0:8^@16"},
     "MLHAMQueuePlayerContext": {"audioFadeController": "@16@0:8"},
     "MLAudioFadeController": {"setPendingTransitionEffects:": "v24@0:8@16"},
@@ -241,7 +267,9 @@ def verify(input_path, output_path=None):
                            b"YTMUPlayerTransitionButton", b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:",
                            b"iosPlayerClientSharedConfigEnableCrossfade", b"musicPlaybackClientConfigIosEnableCrossfade",
                            b"prepareArtworkForOutgoingContext:clip:", b"YTMUNativeTempoSession",
-                           b"YTMUTransitionTrace", b"canEnqueueUpcomingPlaybacks", b"iosPlayerClientSharedConfigEnableVolumeFading"):
+                           b"YTMUTransitionTrace", b"canEnqueueUpcomingPlaybacks", b"iosPlayerClientSharedConfigEnableVolumeFading",
+                           b"iosPlayerClientSharedConfigEnablePlayerPlaybackMigration", b"setPrefetchWindow:",
+                           b"initWithPlayerViewController:latencyLoggerProvider:shouldEnableMediaDrivenPrefetch:", b"transitions r5"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()

@@ -60,6 +60,79 @@ static BOOL YTMUOwnsTransitions(void) {
 %end
 %end
 
+%group TransitionPlaybackMigration
+%hook YTHotConfigIosPlayerClientSharedConfigImpl
+- (BOOL)enablePlayerPlaybackMigration {
+    BOOL own = YTMUOwnsTransitions();
+    if (own) YTMURecordTransitionEvent(@"playback-object", @"preserving-incoming-fade");
+    return own ? YES : %orig;
+}
+%end
+%hook YTHotConfig
+- (BOOL)iosPlayerClientSharedConfigEnablePlayerPlaybackMigration {
+    return YTMUOwnsTransitions() ? YES : %orig;
+}
+%end
+%end
+
+%group TransitionNativePrefetch
+%hook YTPlayerSequencerDefaultPlaybackItemHandler
+- (id)initWithPlayerViewController:(id)controller latencyLoggerProvider:(id)provider shouldEnableMediaDrivenPrefetch:(BOOL)enabled {
+    BOOL effective = YTMUOwnsTransitions() || enabled;
+    YTMURecordTransitionEvent(@"prefetch-mode", [NSString stringWithFormat:@"handler native=%d effective=%d", enabled, effective]);
+    return %orig(controller, provider, effective);
+}
+%end
+%hook YTLocalPlaybackController
+- (id)initWithParentResponder:(id)parent overlayFactory:(id)overlay playerView:(id)view playbackControllerDelegate:(id)delegate viewportSizeProvider:(id)viewport recompositeProvider:(id)recomposite shouldDelayAdsPlaybackCoordinatorCreation:(BOOL)delay shouldEnableMediaDrivenPrefetch:(BOOL)enabled enablePictureInPictureSupport:(BOOL)pip {
+    BOOL effective = YTMUOwnsTransitions() || enabled;
+    YTMURecordTransitionEvent(@"prefetch-mode", [NSString stringWithFormat:@"playback native=%d effective=%d", enabled, effective]);
+    return %orig(parent, overlay, view, delegate, viewport, recomposite, delay, effective, pip);
+}
+- (void)setUpcomingPlayerPlaybacks:(id)value {
+    /* Preserve native ownership and empty-array cancellation. Only the immediate
+       next song receives extra preparation; the native sequencer replenishes it. */
+    id playbacks = value;
+    if ([value isKindOfClass:NSArray.class] && [value count])
+        YTMUPrepareUpcomingTransitionPlayback([value firstObject]);
+    if (YTMUTransitionsRequested() && [value isKindOfClass:NSArray.class] && [value count]) {
+        playbacks = @[[value firstObject]];
+        YTMURecordTransitionEvent(@"upcoming-input", [NSString stringWithFormat:@"native=%lu prepared=1", (unsigned long)[value count]]);
+    }
+    %orig(playbacks);
+}
+- (void)upcomingPlaybackManager:(id)manager resolvedPlayablePlaybacks:(id)playbacks {
+    if (YTMUTransitionsRequested() && [playbacks isKindOfClass:NSArray.class])
+        YTMURecordTransitionEvent(@"upcoming-resolved", [NSString stringWithFormat:@"playable=%lu", (unsigned long)[playbacks count]]);
+    %orig;
+}
+- (id)upcomingPlaybackManagerDidRequestPrefetchAfterLastUpcomingPlayback:(id)manager {
+    if (YTMUTransitionsRequested()) {
+        id pending = ((id (*)(id, SEL))objc_msgSend)(manager, NSSelectorFromString(@"upcomingPlaybacksArray"));
+        if ([pending isKindOfClass:NSArray.class] && [pending count]) return nil;
+    }
+    id result = %orig;
+    YTMUPrepareUpcomingTransitionPlayback(result);
+    return result;
+}
+%end
+%end
+
+%group TransitionTimelineDelivery
+%hook YTQueuePlaybackTimelineManager
+- (void)setPlaybacks:(id)playbacks reloadContext:(id)context {
+    if (YTMUTransitionsRequested() && [playbacks isKindOfClass:NSArray.class])
+        YTMURecordTransitionEvent(@"timeline-input", [NSString stringWithFormat:@"playbacks=%lu", (unsigned long)[playbacks count]]);
+    %orig;
+}
+- (id)createPlayerItemForVideoController:(id)controller reloadContext:(id)context {
+    id result = %orig;
+    YTMURecordNativeTransitionItem(result, controller);
+    return result;
+}
+%end
+%end
+
 %group TransitionNativePool
 %hook MLPlayerPoolImpl
 - (id)acquireQueuePlayerWithStickySettings:(id)settings mediaPlayerResources:(id)resources {
@@ -205,6 +278,17 @@ static BOOL YTMUOwnsTransitions(void) {
         [[YTMUSongTransitionCoordinator shared] observeUpcomingPlaybackData:data];
     });
 }
+- (id)maybeStartPrefetchForPlayback:(id)playback isFirstUpcomingPlayback:(BOOL)first {
+    id result = %orig;
+    if (YTMUTransitionsRequested() && first) {
+        NSInteger code = ((NSInteger (*)(id, SEL))objc_msgSend)(result, NSSelectorFromString(@"result"));
+        NSArray *reasons = @[@"already-playable", @"no-next-playback", @"unplayable", @"in-flight", @"started",
+            @"endpoint-disabled", @"not-immediate-next", @"live-stream", @"waiting-server-window"];
+        YTMURecordTransitionEvent(@"prefetch-result", [NSString stringWithFormat:@"%ld %@", (long)code,
+            code >= 0 && code < (NSInteger)reasons.count ? reasons[code] : @"unknown-native-result"]);
+    }
+    return result;
+}
 %end
 %end
 
@@ -306,6 +390,14 @@ static BOOL YTMUOwnsTransitions(void) {
             %init(TransitionSettings);
             %init(TransitionContentPolicy);
             %init(TransitionEngineFlags);
+            %init(TransitionPlaybackMigration);
+            %init(TransitionNativePrefetch);
+            if (YTMUTransitionMethodMatches(NSClassFromString(@"YTQueuePlaybackTimelineManager"),
+                    NSSelectorFromString(@"setPlaybacks:reloadContext:"), "v", @[@"@", @"@"]) &&
+                YTMUTransitionMethodMatches(NSClassFromString(@"YTQueuePlaybackTimelineManager"),
+                    NSSelectorFromString(@"createPlayerItemForVideoController:reloadContext:"), "@", @[@"@", @"@"])) {
+                %init(TransitionTimelineDelivery);
+            }
             Class sequencer = NSClassFromString(@"YTMPlayerSequencerController");
             if (YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"initWithPlayerViewController:"), "@", @[@"@"]) &&
                 YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:"), "v", @[@"@", @"q", @"B"])) {
@@ -340,7 +432,10 @@ static BOOL YTMUOwnsTransitions(void) {
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigMusicPlaybackClientConfigImpl"), NSSelectorFromString(@"iosEnableCrossfade"), "B", @[])) { %init(TransitionMusicFlag); }
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[])) { %init(TransitionPlayerFlag); }
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"),
-                NSSelectorFromString(@"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:"), "v", @[@"@", @"@"])) {
+                NSSelectorFromString(@"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:"), "v", @[@"@", @"@"]) &&
+                YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"),
+                    NSSelectorFromString(@"maybeStartPrefetchForPlayback:isFirstUpcomingPlayback:"), "@", @[@"@", @"B"]) &&
+                YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManagerPrefetchResultInfo"), NSSelectorFromString(@"result"), "q", @[])) {
                 %init(TransitionUpcomingPlayback);
             }
             Class overlayController = NSClassFromString(@"YTMVideoOverlayViewController");
