@@ -119,3 +119,16 @@
 "ALL_DOWNLOADS" = "all download audios"; //keep it lowercase
 "DELETE" = "Delete";
 "RENAME" = "Rename";
+
+"SONG_TRANSITIONS" = "Song Transitions";
+"AUTOMIX" = "AutoMix";
+"CROSSFADE" = "Crossfade";
+"TRANSITION_STYLE" = "Transition Style";
+"CROSSFADE_DURATION" = "Crossfade Duration";
+"CROSSFADE_SECONDS" = "Crossfade: %ld seconds";
+"TRANSITION_SECONDS_VALUE" = "%ld seconds";
+"TRANSITIONS_ON" = "On";
+"TRANSITIONS_OFF" = "Off";
+"TRANSITIONS_FOOTER" = "AutoMix blends compatible songs automatically. Crossfade uses your chosen duration. Album tracks played in order keep their original transitions.";
+"TRANSITIONS_UNAVAILABLE" = "Song transitions are unavailable in this app version. YouTube Music 9.40.2 is supported.";
+"AUTOMIX_UNAVAILABLE" = "AutoMix is unavailable on this playback system. Choose Crossfade to blend songs.";

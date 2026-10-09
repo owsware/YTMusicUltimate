@@ -1,4 +1,6 @@
 #import "PlayerSettingsController.h"
+#import "SongTransitionsSettingsController.h"
+#import "../Transitions/YTMUSongTransitions.h"
 
 @implementation PlayerSettingsController
 
@@ -26,7 +28,7 @@
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -196,12 +198,28 @@
         }
     }
 
+    if (indexPath.section == 4) {
+        cell.textLabel.text = LOC(@"SONG_TRANSITIONS");
+        NSDictionary *preferences = YTMUTransitionPreferences();
+        cell.detailTextLabel.text = [preferences[@"songTransitionsEnabled"] boolValue] ?
+            ([preferences[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix ? LOC(@"AUTOMIX") : LOC(@"CROSSFADE")) : LOC(@"TRANSITIONS_OFF");
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessoryView = nil;
+    }
+
     return cell;
 }
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
-    return NO;
+    return indexPath.section == 4;
 }
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 4) [self.navigationController pushViewController:[SongTransitionsSettingsController new] animated:YES];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+}
+
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self.tableView reloadData]; }
 
 - (void)toggleSwitch:(UISwitch *)sender {
     NSArray *settingsData = @[

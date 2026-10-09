@@ -23,6 +23,10 @@ Add __[https://ginsu.dev/repo](https://ginsu.dev/repo)__ to your favorite instal
 
 ## How to build a YTMusicUltimate IPA by yourself using Github actions
 
+Song Transitions adds AutoMix, adjustable Crossfade and an Up Next toggle for
+YouTube Music 9.40.2. See [compatibility, build verification and device testing](docs/song-transitions.md).
+On-device playback validation is still required.
+
 If this is your first time here, start from step 1. If you built a YTMU IPA before, skip steps 1 and 2. Instead, click on the "Sync fork" button to get the latest version of the tweak and continue through step 3.
 
 1. Fork this repository using the fork button on the top right.
