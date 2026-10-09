@@ -235,7 +235,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 @property (nonatomic) double mixStart;
 @property (nonatomic) double mixDuration;
 @property (nonatomic) double initialRate;
-@property (nonatomic) double incomingRate;
+@property (nonatomic) double appliedIncomingRate;
 @property (nonatomic) BOOL applyingRate;
 @property (nonatomic) double previousMixTime;
 @property (nonatomic) NSUInteger stalledTicks;
@@ -469,7 +469,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)setIncomingRate:(double)rate {
     if (!self.incomingPlayer) return;
-    self.incomingRate = rate;
+    self.appliedIncomingRate = rate;
     self.applyingRate = YES;
     ((void (*)(id, SEL, float))objc_msgSend)(self.incomingPlayer, NSSelectorFromString(@"setRate:"), (float)rate);
     self.applyingRate = NO;
@@ -509,7 +509,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     /* Native activation re-applies 1x to every context. Keep an ongoing, verified
        incoming tempo adjustment when the user's playback speed has not changed. */
     if (player == self.mixingPlayer && self.incomingPlayer && fabsf(rate - 1) < 0.001)
-        [self setIncomingRate:self.incomingRate];
+        [self setIncomingRate:self.appliedIncomingRate];
 }
 - (void)sequenceChanged {
     if (![NSThread isMainThread]) {
