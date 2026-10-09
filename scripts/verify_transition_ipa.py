@@ -107,7 +107,11 @@ class MachO:
         for at in range(offset, offset + size, 8):
             cls = self.mapped(self.pointer(at))
             ro = self.mapped(self.pointer(cls + 32) & ~7)
-            result[self.string(self.pointer(ro + 24))] = self.methods(self.pointer(ro + 32))
+            methods = self.methods(self.pointer(ro + 32))
+            meta = self.mapped(self.pointer(cls))
+            meta_ro = self.mapped(self.pointer(meta + 32) & ~7)
+            methods.update({"+" + name: types for name, types in self.methods(self.pointer(meta_ro + 32)).items()})
+            result[self.string(self.pointer(ro + 24))] = methods
         return result
 
 
@@ -118,6 +122,7 @@ EXPECTED_METHODS = {
         "crossfadeTransitionFromSettings": "@16@0:8",
         "updateCrossfadeTransitionInActiveSequence": "v16@0:8",
         "scheduleSetSequenceForQueueModification": "v16@0:8",
+        "updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:": "v36@0:8@16q24B32",
         "resetSequence": "v16@0:8",
         "setSequenceForTapNextOrTapPrevWithPlayerTransition:playbackConfig:": "v32@0:8@16@24",
     },
@@ -126,6 +131,7 @@ EXPECTED_METHODS = {
         "spawnCrossfadeWithActiveContext:activeClip:nextContext:": "v40@0:8@16@24@32",
         "pauseWithStoppageReason:": "v20@0:8i16", "play": "v16@0:8", "setRate:": "v20@0:8f16",
         "clearBackgroundPlayer": "v16@0:8",
+        "rate": "f16@0:8",
     },
     "MLHAMQueuePlayer": {"setRate:": "v20@0:8f16", "rate": "f16@0:8", "currentTime": "{?=ddd}16@0:8", "playerQueue": "@16@0:8"},
     "YTUpcomingPlaybackManager": {"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:": "v32@0:8@16@24"},
@@ -139,6 +145,17 @@ EXPECTED_METHODS = {
     },
     "YTColdConfigMusicPlaybackClientConfigImpl": {"iosEnableCrossfade": "B16@0:8"},
     "YTColdConfigIosPlayerClientSharedConfigImpl": {"enableCrossfade": "B16@0:8"},
+    "YTMCrossfadeTransitionPolicy": {
+        "+isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:": "B32@0:8@16@24",
+    },
+    "YTMPlayerControlsView": {
+        "layoutSubviews": "v16@0:8", "sizeThatFits:": "{CGSize=dd}32@0:8{CGSize=dd}16",
+        "style": "q16@0:8", "shuffleButton": "@16@0:8", "loopButton": "@16@0:8",
+    },
+    "YTMNowPlayingView": {
+        "sizeThatFits:": "{CGSize=dd}32@0:8{CGSize=dd}16", "playerControlsView": "@16@0:8",
+        "playerControlsViewHeight": "d16@0:8", "layoutMod3ActionBarScrubberAbovePlayerControls": "v16@0:8",
+    },
 }
 
 
@@ -191,7 +208,8 @@ def verify(input_path, output_path=None):
             if len(libraries) != 1:
                 raise ValueError("Could not locate the injected transition library")
             tweak = archive.read(libraries[0])
-            for marker in (b"YTMUSongTransitionCoordinator", b"SongTransitionsSettingsController", b"songTransitionsEnabled"):
+            for marker in (b"YTMUSongTransitionCoordinator", b"SongTransitionsSettingsController", b"songTransitionsEnabled",
+                           b"YTMUPlayerTransitionButton", b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()

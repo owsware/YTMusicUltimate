@@ -3,6 +3,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+int YTMUAllowsMixContentPair(const YTMUMixContent *outgoing, const YTMUMixContent *incoming) {
+    if (!outgoing || !incoming) return 0;
+    const YTMUMixContent *pair[] = {outgoing, incoming};
+    for (size_t i = 0; i < 2; ++i) {
+        const YTMUMixContent *item = pair[i];
+        if (!isfinite(item->duration) || item->duration < 3 || item->live || item->podcast ||
+            (item->musicVideoType != 1 && item->musicVideoType != 6 && item->musicVideoType != 9) ||
+            (item->crossfadeBehavior != 0 && item->crossfadeBehavior != 2)) return 0;
+    }
+    if (outgoing->album && outgoing->album[0] && incoming->album && !strcmp(outgoing->album, incoming->album) &&
+        outgoing->hasTrackNumber && incoming->hasTrackNumber &&
+        (double)incoming->trackNumber == (double)outgoing->trackNumber + 1) return 0;
+    return 1;
+}
+
 #define FFT_SIZE 2048
 #define HOP 256
 #define MAX_FRAMES (YTMU_ANALYSIS_RATE * YTMU_ANALYSIS_SECONDS / HOP + 1)

@@ -26,7 +26,7 @@ static BOOL YTMUOwnsTransitions(void) {
 %group TransitionMusicFlag
 %hook YTColdConfigMusicPlaybackClientConfigImpl
 - (BOOL)iosEnableCrossfade {
-    return YTMUTransitionsRequested() ? YES : %orig;
+    return YTMUOwnsTransitions() ? YES : %orig;
 }
 %end
 %end
@@ -34,7 +34,7 @@ static BOOL YTMUOwnsTransitions(void) {
 %group TransitionPlayerFlag
 %hook YTColdConfigIosPlayerClientSharedConfigImpl
 - (BOOL)enableCrossfade {
-    return YTMUTransitionsRequested() ? YES : %orig;
+    return YTMUOwnsTransitions() ? YES : %orig;
 }
 %end
 %end
@@ -52,9 +52,9 @@ static BOOL YTMUOwnsTransitions(void) {
     double duration = [[YTMUSongTransitionCoordinator shared] crossfadeDuration];
     return duration > 0 ? [[NSClassFromString(@"YTCrossfadeTransition") alloc] initWithDuration:duration] : nil;
 }
-- (void)scheduleSetSequenceForQueueModification {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+- (void)updateUpcomingVideoIDAndLatencyTickLoggerForSequence:(id)sequence currentSequenceIndex:(NSInteger)index isLoopAllEnabled:(BOOL)loopAll {
     %orig;
+    [[YTMUSongTransitionCoordinator shared] sequenceChanged];
 }
 - (void)resetSequence {
     [[YTMUSongTransitionCoordinator shared] cancel];
@@ -74,7 +74,7 @@ static BOOL YTMUOwnsTransitions(void) {
     if (!YTMUOwnsTransitions() ||
         (![effect isKindOfClass:NSClassFromString(@"YTCrossfadeTransition")] &&
          ![effect isKindOfClass:NSClassFromString(@"MLAudioCrossfadeTransition")])) return original;
-    /* Keep the native server/content policy, including sequential album playback. */
+    /* The native policy hook accepts unassigned song experiments; content vetoes remain. */
     BOOL allowed = original && [[YTMUSongTransitionCoordinator shared] allowsTransitionsForPlaybackController:controller current:current upcoming:upcoming];
     if (allowed) [[YTMUSongTransitionCoordinator shared] observeCurrentResponse:current upcomingResponse:upcoming];
     return allowed;
@@ -97,6 +97,7 @@ static BOOL YTMUOwnsTransitions(void) {
 %group TransitionNativePlayer
 %hook MLHAMMultiPlayer
 - (void)spawnCrossfadeWithActiveContext:(id)outgoing activeClip:(id)clip nextContext:(id)incoming {
+    [[YTMUSongTransitionCoordinator shared] nativeFadeWillStart:self];
     [[YTMUSongTransitionCoordinator shared] prepareIncomingContext:incoming];
     %orig;
     /* The native engine alone activates the incoming clip and advances the queue. */
@@ -113,8 +114,11 @@ static BOOL YTMUOwnsTransitions(void) {
     [[YTMUSongTransitionCoordinator shared] resumeMix];
 }
 - (void)setRate:(float)rate {
-    [[YTMUSongTransitionCoordinator shared] cancel];
+    float previous = ((float (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"rate"));
+    if (!isfinite(rate) || fabsf(previous - rate) > 0.001)
+        [[YTMUSongTransitionCoordinator shared] cancel];
     %orig;
+    [[YTMUSongTransitionCoordinator shared] nativeRateChanged:rate player:self];
 }
 %end
 %end
@@ -130,43 +134,50 @@ static BOOL YTMUOwnsTransitions(void) {
 %end
 %end
 
-static const void *YTMUQueueButtonKey = &YTMUQueueButtonKey;
-static const void *YTMUQueueBottomInsetKey = &YTMUQueueBottomInsetKey;
-
-%group TransitionQueueUI
-%hook YTMQueueCollectionViewController
-- (void)viewDidLoad {
-    %orig;
-    UIViewController *controller = (UIViewController *)self;
-    YTMUQueueTransitionButton *button = [[YTMUQueueTransitionButton alloc] initWithFrame:CGRectZero];
-    button.queueController = self;
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    [controller.view addSubview:button];
-    [NSLayoutConstraint activateConstraints:@[
-        [button.trailingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
-        [button.bottomAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
-        [button.heightAnchor constraintGreaterThanOrEqualToConstant:44]
-    ]];
-    objc_setAssociatedObject(self, YTMUQueueButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+%group TransitionContentPolicy
+%hook YTMCrossfadeTransitionPolicy
++ (BOOL)isCrossfadeTransitionEnabledForCurrentPlayerResponse:(id)current upcomingPlayerResponse:(id)upcoming {
+    if (YTMUOwnsTransitions()) return YTMUTransitionsAllowContentPair(current, upcoming);
+    return %orig;
 }
-- (void)viewDidLayoutSubviews {
+%end
+%end
+
+@interface YTMPlayerControlsView : UIView
+@end
+@interface YTMNowPlayingView : UIView
+@property (nonatomic, readonly) YTMPlayerControlsView *playerControlsView;
+@end
+
+%group TransitionPlayerUI
+%hook YTMPlayerControlsView
+- (CGSize)sizeThatFits:(CGSize)size {
+    CGSize result = %orig;
+    if (YTMUTransitionControlsVisible(self)) result.height += 44;
+    return result;
+}
+- (void)layoutSubviews {
+    YTMURestoreTransitionControlFrames(self);
     %orig;
-    UIViewController *controller = (UIViewController *)self;
-    UIButton *button = objc_getAssociatedObject(self, YTMUQueueButtonKey);
-    if (!button) return;
-    [controller.view bringSubviewToFront:button];
-    /* Reserve room for the compact button so the final queue item remains reachable. */
-    NSArray *candidates = [controller.view isKindOfClass:UICollectionView.class] ? @[controller.view] : controller.view.subviews;
-    for (UIView *view in candidates) {
-        if (![view isKindOfClass:UICollectionView.class]) continue;
-        UICollectionView *collection = (UICollectionView *)view;
-        NSNumber *previous = objc_getAssociatedObject(collection, YTMUQueueBottomInsetKey);
-        UIEdgeInsets inset = collection.contentInset;
-        if (!previous || fabs(inset.bottom - previous.doubleValue) > 0.5) {
-            inset.bottom += 64;
-            objc_setAssociatedObject(collection, YTMUQueueBottomInsetKey, @(inset.bottom), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            collection.contentInset = inset;
-        }
+    YTMULayoutTransitionControls(self);
+}
+%end
+%hook YTMNowPlayingView
+- (CGSize)sizeThatFits:(CGSize)size {
+    CGSize result = %orig;
+    if (YTMUTransitionControlsVisible(self.playerControlsView)) result.height += 44;
+    return result;
+}
+- (double)playerControlsViewHeight {
+    double height = %orig;
+    return height + (YTMUTransitionControlsVisible(self.playerControlsView) ? 44 : 0);
+}
+- (void)layoutMod3ActionBarScrubberAbovePlayerControls {
+    %orig;
+    /* This native layout uses a fixed 72pt frame instead of its height getter. */
+    if (YTMUTransitionControlsVisible(self.playerControlsView)) {
+        CGRect frame = self.playerControlsView.frame; frame.size.height += 44;
+        self.playerControlsView.frame = frame;
     }
 }
 %end
@@ -182,9 +193,10 @@ static const void *YTMUQueueBottomInsetKey = &YTMUQueueBottomInsetKey;
         [YTMUSongTransitionCoordinator shared];
         if (YTMUTransitionsCrossfadeSupported()) {
             %init(TransitionSettings);
+            %init(TransitionContentPolicy);
             Class sequencer = NSClassFromString(@"YTMPlayerSequencerController");
             if (YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"initWithPlayerViewController:"), "@", @[@"@"]) &&
-                YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"scheduleSetSequenceForQueueModification"), "v", @[])) {
+                YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:"), "v", @[@"@", @"q", @"B"])) {
                 %init(TransitionSequencer);
             }
             Class player = NSClassFromString(@"YTPlayerViewController");
@@ -203,11 +215,19 @@ static const void *YTMUQueueBottomInsetKey = &YTMUQueueBottomInsetKey;
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[])) { %init(TransitionPlayerFlag); }
             if (YTMUTransitionsAutoMixSupported()) { %init(TransitionUpcomingPlayback); }
         }
-        Class queue = NSClassFromString(@"YTMQueueCollectionViewController");
-        if ([queue isSubclassOfClass:UIViewController.class] &&
-            YTMUTransitionMethodMatches(queue, @selector(viewDidLoad), "v", @[]) &&
-            YTMUTransitionMethodMatches(queue, @selector(viewDidLayoutSubviews), "v", @[])) {
-            %init(TransitionQueueUI);
+        Class controls = NSClassFromString(@"YTMPlayerControlsView");
+        Class nowPlaying = NSClassFromString(@"YTMNowPlayingView");
+        if ([controls isSubclassOfClass:UIView.class] && [nowPlaying isSubclassOfClass:UIView.class] &&
+            YTMUTransitionMethodMatches(controls, @selector(layoutSubviews), "v", @[]) &&
+            YTMUTransitionMethodMatches(controls, @selector(sizeThatFits:), "{CGSize=dd}", @[@"{CGSize=dd}"]) &&
+            YTMUTransitionMethodMatches(controls, NSSelectorFromString(@"style"), "q", @[]) &&
+            YTMUTransitionMethodMatches(controls, NSSelectorFromString(@"shuffleButton"), "@", @[]) &&
+            YTMUTransitionMethodMatches(controls, NSSelectorFromString(@"loopButton"), "@", @[]) &&
+            YTMUTransitionMethodMatches(nowPlaying, @selector(sizeThatFits:), "{CGSize=dd}", @[@"{CGSize=dd}"]) &&
+            YTMUTransitionMethodMatches(nowPlaying, NSSelectorFromString(@"playerControlsView"), "@", @[]) &&
+            YTMUTransitionMethodMatches(nowPlaying, NSSelectorFromString(@"playerControlsViewHeight"), "d", @[]) &&
+            YTMUTransitionMethodMatches(nowPlaying, NSSelectorFromString(@"layoutMod3ActionBarScrubberAbovePlayerControls"), "v", @[])) {
+            %init(TransitionPlayerUI);
         }
     }
 }

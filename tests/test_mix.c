@@ -22,7 +22,47 @@ static void chord(float *pcm, double root, double third, double fifth) {
     }
 }
 
+static void test_content_policy(void) {
+    YTMUMixContent song = {.duration = 180, .musicVideoType = 1, .crossfadeBehavior = 0};
+    YTMUMixContent next = song;
+    /* Ordinary audio tracks work without server experiment assignment or a
+       manually selected audio-only mode. Explicit content exclusions remain. */
+    assert(YTMUAllowsMixContentPair(&song, &next));
+    next.crossfadeBehavior = 2;
+    assert(YTMUAllowsMixContentPair(&song, &next));
+    next.crossfadeBehavior = 1;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next.crossfadeBehavior = -1;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next = song;
+    for (int type = 0; type <= 9; ++type) {
+        next.musicVideoType = type;
+        assert(YTMUAllowsMixContentPair(&song, &next) == (type == 1 || type == 6 || type == 9));
+    }
+    next = song; next.live = 1;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next = song; next.podcast = 1;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next = song; next.duration = 2;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next.duration = NAN;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next = song;
+    song.album = next.album = "album";
+    song.hasTrackNumber = next.hasTrackNumber = 1;
+    song.trackNumber = 3; next.trackNumber = 4;
+    assert(!YTMUAllowsMixContentPair(&song, &next));
+    next.trackNumber = 5;
+    assert(YTMUAllowsMixContentPair(&song, &next));
+    next.trackNumber = 4; next.album = "other album";
+    assert(YTMUAllowsMixContentPair(&song, &next));
+    next.album = "album"; next.hasTrackNumber = 0;
+    assert(YTMUAllowsMixContentPair(&song, &next));
+    assert(!YTMUAllowsMixContentPair(NULL, &next));
+}
+
 int main(void) {
+    test_content_policy();
     float *pcm = calloc(SAMPLES, sizeof(float)); assert(pcm);
     YTMUMixAnalysis silence, outgoing, incoming;
     assert(YTMUAnalysePCM(pcm, SAMPLES, &silence));

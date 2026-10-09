@@ -1,8 +1,9 @@
 # Song transitions
 
 Open **YTMusicUltimate → Player Settings → Song Transitions**. Enable transitions,
-choose AutoMix or Crossfade, and set Crossfade to 1–12 seconds. The compact button
-in Up Next toggles the saved mode. Defaults are off, AutoMix, and four seconds.
+choose AutoMix or Crossfade, and set Crossfade to 1–12 seconds. Two compact toggles sit
+beneath Shuffle and Repeat in the native music player. Tap a mode to enable it;
+tap the active mode again to turn transitions off. Only one mode is active. Defaults are off, AutoMix, and four seconds.
 The controls follow [Apple Music's interaction model](https://support.apple.com/en-ie/105067).
 Settings use the existing `YTMUltimate` preferences dictionary and apply live.
 
@@ -18,12 +19,17 @@ AutoMix additionally requires independent native player rate control and the
 actual incoming `AVSampleBufferAudioRenderer` to accept and report Apple's
 pitch-preserving spectral algorithm. Missing capabilities retain crossfade or
 native playback. An unsupported or inaccessible analysis stream falls back to
-crossfade. Native content policy stays in force: mixing also requires both
-responses to permit crossfade. Sequential album tracks retain native transitions.
+crossfade. Ordinary audio tracks accept an unassigned server crossfade experiment
+(Unknown = 0); an explicit Disabled = 1 response still vetoes transitions. Song
+classification uses the verified protobuf music type instead of requiring the
+user to select audio-only mode. Sequential album tracks retain native transitions.
+Native engine flags are enabled at startup independently of the saved on/off
+toggle; transition scheduling stays off until a mode is enabled.
 Videos, live streams, podcasts, casting, picture-in-picture and repeat-one bypass
 mixing. User-selected playback speeds other than 1× suppress tempo adjustment.
 
-**Status: implementation and local checks only; on-device playback is unverified.**
+**Status: the initial device test reported no audible overlap. Activation and
+layout fixes require a new device test; AutoMix is not validated as complete.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -35,10 +41,12 @@ The native sequencer, upcoming-playback manager, audio fade controllers and
 multi-player remain responsible for playback, gains, queue advancement and
 metadata. The coordinator schedules no independent player and never advances
 the queue itself. Pause/resume retains native control of both players. Seek,
-skip, queue rebuild, SponsorBlock seek, preference changes, audio route changes,
+skip, replacement of the current/next song, SponsorBlock seek, preference changes, audio route changes,
 interruptions and Low Power Mode changes cancel analysis and restore tempo.
 Cancellation clears an active overlap through the native fade and background
-player cleanup methods. Native playback owns interruption recovery.
+player cleanup methods. Routine queue extension and the native handoff do not
+cancel the overlap. Reapplying the same playback speed does not discard analysis
+or tempo recovery. Native playback owns interruption recovery.
 
 Only the final and opening 12 seconds of the current/next pair are analysed.
 Analysis starts from native upcoming playback prefetch and runs on one utility
@@ -73,9 +81,12 @@ executable hash, verifies the 9.40.2 playback interfaces, and checks the injecte
 code and settings resources. Run it against the downloaded build. Its report
 explicitly records `on_device_validation: not_performed`.
 
-The queue toggle uses the native queue background and player button colours,
-including artwork-derived themes and the tweak's OLED theme. Settings use the
-existing tweak's red accent and standard compact controls.
+The player toggles use transparent backgrounds and native control colours,
+including artwork-derived themes and the tweak's OLED theme. A small dot marks
+the active mode, and each toggle has a 44-point touch target and an accessible
+on/off value. Native music layouts reserve a row so the toggles remain inside
+the player instead of floating over queue items. Settings use the existing
+tweak's red accent and standard compact controls.
 
 Local analysis tests can be run with:
 

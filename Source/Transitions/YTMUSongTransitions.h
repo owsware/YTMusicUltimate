@@ -9,7 +9,11 @@ BOOL YTMUTransitionsAutoMixSupported(void);
 NSDictionary *YTMUTransitionPreferences(void);
 void YTMUSetTransitionPreference(NSString *key, id value);
 BOOL YTMUTransitionsRequested(void);
+BOOL YTMUTransitionsAllowContentPair(id current, id upcoming);
 NSString *YTMUTransitionsAvailability(void);
+BOOL YTMUTransitionControlsVisible(UIView *controls);
+void YTMULayoutTransitionControls(UIView *controls);
+void YTMURestoreTransitionControlFrames(UIView *controls);
 
 @interface YTMUSongTransitionCoordinator : NSObject
 + (instancetype)shared;
@@ -19,12 +23,17 @@ NSString *YTMUTransitionsAvailability(void);
 - (void)prepareIncomingContext:(id)context;
 - (BOOL)allowsTransitionsForPlaybackController:(id)controller current:(id)current upcoming:(id)upcoming;
 - (double)crossfadeDuration;
+- (void)nativeFadeWillStart:(id)multiPlayer;
 - (void)nativeFadeStarted:(id)multiPlayer outgoingContext:(id)outgoing incomingContext:(id)incoming;
 - (void)pauseMix;
 - (void)resumeMix;
+- (void)sequenceChanged;
+- (void)nativeRateChanged:(float)rate player:(id)player;
 - (void)cancel;
 @end
 
-@interface YTMUQueueTransitionButton : UIButton
-@property (nonatomic, weak) id queueController;
+@interface YTMUPlayerTransitionButton : UIButton
+@property (nonatomic) YTMUTransitionMode mode;
+@property (nonatomic, weak) UIButton *nativeButton;
+- (void)refresh;
 @end

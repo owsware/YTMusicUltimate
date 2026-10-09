@@ -44,6 +44,19 @@ static BOOL boolGetter(id object, NSString *name, BOOL fallback) {
     return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
+static int64_t integerGetter(id object, NSString *name, int64_t fallback) {
+    SEL selector = NSSelectorFromString(name);
+    if (!object || ![object respondsToSelector:selector]) return fallback;
+    NSMethodSignature *signature = [object methodSignatureForSelector:selector];
+    if (signature.numberOfArguments != 2) return fallback;
+    const char *type = unqualified(signature.methodReturnType);
+    if (!strcmp(type, "i")) return ((int32_t (*)(id, SEL))objc_msgSend)(object, selector);
+    if (!strcmp(type, "I")) return ((uint32_t (*)(id, SEL))objc_msgSend)(object, selector);
+    if (!strcmp(type, "q")) return ((int64_t (*)(id, SEL))objc_msgSend)(object, selector);
+    if (!strcmp(type, "Q")) return ((uint64_t (*)(id, SEL))objc_msgSend)(object, selector);
+    return fallback;
+}
+
 static id objectIvar(id object, const char *name) {
     if (!object) return nil;
     Ivar ivar = class_getInstanceVariable([object class], name);
@@ -99,12 +112,15 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"initWithPlayerViewController:"), "@", @[@"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"updateCrossfadeTransitionInActiveSequence"), "v", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"scheduleSetSequenceForQueueModification"), "v", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:"), "v", @[@"@", @"q", @"B"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"resetSequence"), "v", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"setSequenceForTapNextOrTapPrevWithPlayerTransition:playbackConfig:"), "v", @[@"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"spawnCrossfadeWithActiveContext:activeClip:nextContext:"), "v", @[@"@", @"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"pauseWithStoppageReason:"), "v", @[@"i"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"play"), "v", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"setRate:"), "v", @[@"f"]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"rate"), "f", @[]) &&
+            YTMUTransitionMethodMatches(object_getClass(NSClassFromString(@"YTMCrossfadeTransitionPolicy")), NSSelectorFromString(@"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:"), "B", @[@"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"clearBackgroundPlayer"), "v", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMQueuePlayerContext"), NSSelectorFromString(@"audioFadeController"), "@", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLAudioFadeController"), NSSelectorFromString(@"setPendingTransitionEffects:"), "v", @[@"@"]) &&
@@ -165,6 +181,33 @@ BOOL YTMUTransitionsRequested(void) {
         ([preferences[@"songTransitionMode"] integerValue] == YTMUTransitionCrossfade || YTMUTransitionsAutoMixSupported());
 }
 
+static YTMUMixContent responseContent(id response) {
+    id data = objectGetter(response, @"playerData");
+    id details = objectGetter(data, @"videoDetails");
+    id config = objectGetter(objectGetter(objectGetter(data, @"playerConfig"), @"audioConfig"), @"crossfadeConfig");
+    id metadata = objectGetter(data, @"trackAlbumMetadata");
+    NSString *album = objectGetter(metadata, @"externalPlaylistId");
+    /* Values are verified from 9.40.2's protobuf enum descriptors. Unknown
+       crossfade policy is an unassigned experiment, not a content veto. */
+    return (YTMUMixContent){
+        .duration = responseDuration(response),
+        .musicVideoType = (int)integerGetter(details, @"musicVideoType", -1),
+        .crossfadeBehavior = (int)integerGetter(config, @"crossfadeBehavior", config ? -1 : 0),
+        .live = boolGetter(data, @"isLivePlayback", YES) || boolGetter(details, @"isLiveContent", NO),
+        .podcast = boolGetter(details, @"isExternallyHostedPodcast", NO),
+        .album = [album isKindOfClass:NSString.class] ? album.UTF8String : NULL,
+        .hasTrackNumber = boolGetter(metadata, @"hasTrackNumber", NO),
+        .trackNumber = (int)integerGetter(metadata, @"trackNumber", 0)
+    };
+}
+
+BOOL YTMUTransitionsAllowContentPair(id current, id upcoming) {
+    if (!YTMUTransitionsRequested() || !current || !upcoming ||
+        !videoID(current).length || !videoID(upcoming).length || [videoID(current) isEqual:videoID(upcoming)]) return NO;
+    YTMUMixContent outgoing = responseContent(current), incoming = responseContent(upcoming);
+    return YTMUAllowsMixContentPair(&outgoing, &incoming);
+}
+
 NSString *YTMUTransitionsAvailability(void) {
     if (!YTMUTransitionsCrossfadeSupported()) return LOC(@"TRANSITIONS_UNAVAILABLE");
     if (!YTMUTransitionsAutoMixSupported()) return LOC(@"AUTOMIX_UNAVAILABLE");
@@ -186,11 +229,13 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 @property (nonatomic) YTMUMixPlan plan;
 @property (nonatomic, weak) id mixingPlayer;
 @property (nonatomic, weak) id nativeOverlapPlayer;
+@property (nonatomic) BOOL handoffInProgress;
 @property (nonatomic, weak) id incomingPlayer;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic) double mixStart;
 @property (nonatomic) double mixDuration;
 @property (nonatomic) double initialRate;
+@property (nonatomic) double incomingRate;
 @property (nonatomic) BOOL applyingRate;
 @property (nonatomic) double previousMixTime;
 @property (nonatomic) NSUInteger stalledTicks;
@@ -218,7 +263,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     return self;
 }
 - (void)bindSequencer:(id)sequencer playerController:(id)controller {
-    if (![NSThread isMainThread]) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self bindSequencer:sequencer playerController:controller]; }); return;
+    }
     self.sequencer = sequencer; self.playerController = controller;
 }
 - (void)preferencesChanged:(NSNotification *)notification {
@@ -242,17 +289,11 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         ((void (*)(id, SEL))objc_msgSend)(self.sequencer, selector);
 }
 - (BOOL)allowsTransitionsForPlaybackController:(id)controller current:(id)current upcoming:(id)upcoming {
-    if (!YTMUTransitionsRequested()) return NO;
+    if (!YTMUTransitionsAllowContentPair(current, upcoming)) return NO;
     id status = objectGetter(controller, @"playerStatus");
     if (!status || boolGetter(status, @"externalPlayback", YES) ||
-        !boolGetter(status, @"isUserAudioOnlyModeActive", NO) || boolGetter(status, @"pictureInPicture", NO) ||
+        boolGetter(status, @"pictureInPicture", NO) ||
         boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES)) return NO;
-    for (id response in @[current ?: NSNull.null, upcoming ?: NSNull.null]) {
-        id data = objectGetter(response, @"playerData");
-        id details = objectGetter(data, @"videoDetails");
-        if (!data || boolGetter(data, @"isLivePlayback", YES) || boolGetter(details, @"isLiveContent", NO) ||
-            boolGetter(details, @"isPodcastEpisode", NO) || responseDuration(response) < 3) return NO;
-    }
     return YES;
 }
 - (double)crossfadeDuration {
@@ -267,8 +308,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     return currentDuration > 0 ? MIN(duration, currentDuration / 2) : duration;
 }
 - (void)observeCurrentResponse:(id)current upcomingResponse:(id)upcoming {
-    if (![NSThread isMainThread] || !YTMUTransitionsRequested() ||
-        [self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
+    if (![NSThread isMainThread] || !YTMUTransitionsRequested() || self.incomingPlayer || self.handoffInProgress) return;
     NSString *currentID = videoID(current), *nextID = videoID(upcoming);
     id immediateNext = objectGetter(self.sequencer, @"upcomingVideoID");
     if (!currentID.length || !nextID.length || ![immediateNext isEqual:nextID]) return;
@@ -279,6 +319,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     double outgoingDuration = responseDuration(current), incomingDuration = responseDuration(upcoming);
     double fallback = [self.preferences[@"crossfadeDuration"] doubleValue];
     self.plan = YTMUPlanMix(NULL, NULL, outgoingDuration, incomingDuration, fallback, 0, 0);
+    if ([self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
     NSString *tailKey = [NSString stringWithFormat:@"%@/tail/%.3f", currentID, outgoingDuration];
     NSString *headKey = [NSString stringWithFormat:@"%@/head/%.3f", nextID, incomingDuration];
     NSData *cachedTail = [self.cache objectForKey:tailKey], *cachedHead = [self.cache objectForKey:headKey];
@@ -379,8 +420,16 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         }
     });
 }
+- (void)nativeFadeWillStart:(id)multiPlayer {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativeFadeWillStart:multiPlayer]; }); return;
+    }
+    if (!YTMUTransitionsRequested()) return;
+    self.handoffInProgress = YES; self.nativeOverlapPlayer = multiPlayer;
+}
 - (void)nativeFadeStarted:(id)multiPlayer outgoingContext:(id)outgoing incomingContext:(id)incoming {
     if (![NSThread isMainThread] || !YTMUTransitionsRequested()) return;
+    self.handoffInProgress = NO;
     id nativeState = objectGetter(multiPlayer, @"playerContextState");
     if (objectGetter(nativeState, @"activePlayerContext") != incoming || !objectGetter(nativeState, @"backgroundPlayerContext")) return;
     self.nativeOverlapPlayer = multiPlayer;
@@ -420,6 +469,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)setIncomingRate:(double)rate {
     if (!self.incomingPlayer) return;
+    self.incomingRate = rate;
     self.applyingRate = YES;
     ((void (*)(id, SEL, float))objc_msgSend)(self.incomingPlayer, NSSelectorFromString(@"setRate:"), (float)rate);
     self.applyingRate = NO;
@@ -452,6 +502,31 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     self.timer.tolerance = 0.01;
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
 }
+- (void)nativeRateChanged:(float)rate player:(id)player {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativeRateChanged:rate player:player]; }); return;
+    }
+    /* Native activation re-applies 1x to every context. Keep an ongoing, verified
+       incoming tempo adjustment when the user's playback speed has not changed. */
+    if (player == self.mixingPlayer && self.incomingPlayer && fabsf(rate - 1) < 0.001)
+        [self setIncomingRate:self.incomingRate];
+}
+- (void)sequenceChanged {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self sequenceChanged]; }); return;
+    }
+    if (!self.pair) return;
+    NSArray<NSString *> *identifiers = [self.pair componentsSeparatedByString:@"/"];
+    NSString *current = videoID(objectGetter(self.playerController, @"playerResponse"));
+    NSString *upcoming = objectGetter(self.sequencer, @"upcomingVideoID");
+    if (identifiers.count != 2) { [self cancel]; return; }
+    /* Queue extension and the native handoff also rebuild the sequence. They
+       must not tear down the overlap they just started. Explicit skip/seek/reset
+       paths still cancel, as does replacing the current/next song. */
+    id state = objectGetter(self.nativeOverlapPlayer, @"playerContextState");
+    if ([current isEqual:identifiers[1]] && (self.handoffInProgress || self.incomingPlayer || objectGetter(state, @"backgroundPlayerContext"))) return;
+    if (![current isEqual:identifiers[0]] || ![upcoming isEqual:identifiers[1]]) [self cancel];
+}
 - (void)cancel {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self cancel]; }); return; }
     self.generation++; self.pair = nil;
@@ -459,6 +534,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     self.incomingPlayer = nil; self.mixingPlayer = nil;
     self.plan = (YTMUMixPlan){YTMUMixBypass, 0, 1};
     id nativePlayer = self.nativeOverlapPlayer;
+    self.handoffInProgress = NO;
     self.nativeOverlapPlayer = nil; /* Clear first: native completion can send sequencer callbacks. */
     id state = objectGetter(nativePlayer, @"playerContextState");
     if (objectGetter(state, @"backgroundPlayerContext")) {
@@ -482,57 +558,117 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 @end
 
-@implementation YTMUQueueTransitionButton
+static const void *YTMUPlayerControlsRowKey = &YTMUPlayerControlsRowKey;
+static const void *YTMUPlayerControlOffsetKey = &YTMUPlayerControlOffsetKey;
+
+BOOL YTMUTransitionControlsVisible(UIView *controls) {
+    return controls && YTMUTransitionsCrossfadeSupported() &&
+        [YTMUTransitionPreferences()[@"YTMUltimateIsEnabled"] boolValue] && integerGetter(controls, @"style", -1) == 0;
+}
+
+void YTMURestoreTransitionControlFrames(UIView *controls) {
+    for (UIView *view in controls.subviews) {
+        NSNumber *offset = objc_getAssociatedObject(view, YTMUPlayerControlOffsetKey);
+        if (!offset) continue;
+        CGRect frame = view.frame; frame.origin.y += offset.doubleValue; view.frame = frame;
+        objc_setAssociatedObject(view, YTMUPlayerControlOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+void YTMULayoutTransitionControls(UIView *controls) {
+    UIView *row = objc_getAssociatedObject(controls, YTMUPlayerControlsRowKey);
+    if (!YTMUTransitionControlsVisible(controls) || controls.bounds.size.height < 100 || controls.bounds.size.width < 160) {
+        row.hidden = YES; return;
+    }
+    if (!row) {
+        row = [UIView new];
+        for (NSInteger mode = 0; mode < 2; mode++) {
+            YTMUPlayerTransitionButton *button = [[YTMUPlayerTransitionButton alloc] initWithFrame:CGRectZero];
+            button.mode = mode; [row addSubview:button];
+        }
+        [controls addSubview:row];
+        objc_setAssociatedObject(controls, YTMUPlayerControlsRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    row.hidden = NO;
+    /* Native controls are centered in the expanded bounds. Restore their original
+       row, leaving 44 points for the two toggles. Undo before each native layout. */
+    for (UIView *view in controls.subviews) {
+        if (![view isKindOfClass:UIControl.class]) continue;
+        CGRect frame = view.frame; frame.origin.y -= 22; view.frame = frame;
+        objc_setAssociatedObject(view, YTMUPlayerControlOffsetKey, @22, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    CGFloat width = controls.bounds.size.width;
+    row.frame = CGRectMake(0, controls.bounds.size.height - 44, width, 44);
+    CGFloat buttonWidth = MIN(120, (width - 16) / 2);
+    for (YTMUPlayerTransitionButton *button in row.subviews) {
+        UIButton *native = objectGetter(controls, button.mode == YTMUTransitionAutoMix ? @"shuffleButton" : @"loopButton");
+        button.nativeButton = [native isKindOfClass:UIButton.class] ? native : nil;
+        CGFloat center = native ? native.center.x : width * (button.mode == 0 ? 0.25 : 0.75);
+        CGFloat x = MAX(0, MIN(width - buttonWidth, center - buttonWidth / 2));
+        button.frame = CGRectMake(x, 0, buttonWidth, 44);
+        [button refresh];
+    }
+}
+
+@implementation YTMUPlayerTransitionButton
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        self.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-        self.layer.cornerRadius = 22;
-        self.contentEdgeInsets = UIEdgeInsetsMake(8, 12, 8, 12);
+        self.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        self.titleLabel.adjustsFontSizeToFitWidth = YES;
+        self.titleLabel.minimumScaleFactor = 0.8;
+        self.contentEdgeInsets = UIEdgeInsetsMake(0, 4, 4, 4);
+        self.imageEdgeInsets = UIEdgeInsetsMake(0, -3, 0, 3);
+        self.backgroundColor = UIColor.clearColor;
         [self addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh)
                                                      name:YTMUTransitionsChangedNotification object:nil];
-        [self refresh];
     }
     return self;
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 - (void)didMoveToWindow { [super didMoveToWindow]; [self refresh]; }
-- (void)layoutSubviews { [super layoutSubviews]; [self updateAppearance]; }
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
-    [super traitCollectionDidChange:previous]; [self updateAppearance];
-}
-- (void)updateAppearance {
-    id scheme = objectGetter(self.queueController, @"colorScheme");
-    UIColor *background = objectGetter(scheme, @"queueBackgroundColor");
-    UIColor *accent = objectGetter(scheme, @"playButtonColor");
-    if (![background isKindOfClass:UIColor.class]) background = UIColor.secondarySystemBackgroundColor;
-    if (![accent isKindOfClass:UIColor.class]) accent = UIColor.labelColor;
-    CGFloat red = 0, green = 0, blue = 0, alpha = 0;
-    BOOL dark = [background getRed:&red green:&green blue:&blue alpha:&alpha] &&
-        0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5;
-    UIColor *foreground = dark ? UIColor.whiteColor : UIColor.blackColor;
-    BOOL active = self.selected && self.enabled;
-    self.backgroundColor = active ? accent : background;
-    UIColor *activeText = dark ? UIColor.blackColor : UIColor.whiteColor;
-    if ([accent getRed:&red green:&green blue:&blue alpha:&alpha])
-        activeText = 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5 ? UIColor.whiteColor : UIColor.blackColor;
-    [self setTitleColor:active ? activeText : foreground forState:UIControlStateNormal];
-    self.layer.borderWidth = active ? 0 : 1;
-    self.layer.borderColor = [foreground colorWithAlphaComponent:0.24].CGColor;
+    [super traitCollectionDidChange:previous]; [self refresh];
 }
 - (void)refresh {
     NSDictionary *preferences = YTMUTransitionPreferences();
-    BOOL autoMix = [preferences[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix;
-    BOOL enabled = [preferences[@"songTransitionsEnabled"] boolValue];
-    [self setTitle:autoMix ? LOC(@"AUTOMIX") : LOC(@"CROSSFADE") forState:UIControlStateNormal];
     self.enabled = [preferences[@"YTMUltimateIsEnabled"] boolValue] && YTMUTransitionsCrossfadeSupported() &&
-                   (!autoMix || YTMUTransitionsAutoMixSupported());
-    self.selected = enabled;
-    [self updateAppearance];
-    self.alpha = self.enabled ? 1 : 0.45;
-    self.accessibilityLabel = LOC(@"SONG_TRANSITIONS");
-    self.accessibilityValue = enabled ? LOC(@"TRANSITIONS_ON") : LOC(@"TRANSITIONS_OFF");
-    self.accessibilityTraits = UIAccessibilityTraitButton | (enabled ? UIAccessibilityTraitSelected : 0);
+        (self.mode == YTMUTransitionCrossfade || YTMUTransitionsAutoMixSupported());
+    self.selected = [preferences[@"songTransitionsEnabled"] boolValue] &&
+        [preferences[@"songTransitionMode"] integerValue] == self.mode;
+    NSString *title = self.mode == YTMUTransitionAutoMix ? LOC(@"AUTOMIX") : LOC(@"CROSSFADE");
+    [self setTitle:title forState:UIControlStateNormal];
+    UIImageSymbolConfiguration *symbols = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightRegular];
+    [self setImage:[UIImage systemImageNamed:self.mode == YTMUTransitionAutoMix ? @"waveform" : @"arrow.left.arrow.right"
+                         withConfiguration:symbols] forState:UIControlStateNormal];
+    UIColor *nativeColor = objectGetter(UIColor.class, @"ytm_selectedButtonColor");
+    if (![nativeColor isKindOfClass:UIColor.class]) nativeColor = self.nativeButton.tintColor ?: UIColor.labelColor;
+    UIColor *color = self.selected ? nativeColor : [nativeColor colorWithAlphaComponent:0.6];
+    self.tintColor = color; [self setTitleColor:color forState:UIControlStateNormal];
+    self.alpha = self.enabled ? 1 : 0.35;
+    self.accessibilityLabel = title;
+    self.accessibilityValue = self.selected ? LOC(@"TRANSITIONS_ON") : LOC(@"TRANSITIONS_OFF");
+    self.accessibilityHint = self.enabled ? nil : YTMUTransitionsAvailability();
+    self.accessibilityTraits = UIAccessibilityTraitButton | (self.selected ? UIAccessibilityTraitSelected : 0) |
+        (self.enabled ? 0 : UIAccessibilityTraitNotEnabled);
+    [self setNeedsDisplay];
 }
-- (void)toggle { YTMUSetTransitionPreference(@"songTransitionsEnabled", @(![YTMUTransitionPreferences()[@"songTransitionsEnabled"] boolValue])); }
+- (void)drawRect:(CGRect)rect {
+    [super drawRect:rect];
+    if (self.selected) {
+        [self.tintColor setFill];
+        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(CGRectGetMidX(self.bounds) - 2, self.bounds.size.height - 7, 4, 4)] fill];
+    }
+}
+- (void)toggle {
+    if (!self.enabled) return;
+    NSDictionary *current = YTMUTransitionPreferences();
+    BOOL active = [current[@"songTransitionsEnabled"] boolValue] && [current[@"songTransitionMode"] integerValue] == self.mode;
+    NSMutableDictionary *preferences = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"YTMUltimate"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    preferences[@"songTransitionsEnabled"] = @(!active);
+    preferences[@"songTransitionMode"] = @(self.mode);
+    /* Store both values together: one tap, one preference notification/rebuild. */
+    [[NSUserDefaults standardUserDefaults] setObject:preferences forKey:@"YTMUltimate"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSUserDefaultsDidChangeNotification object:NSUserDefaults.standardUserDefaults];
+}
 @end
