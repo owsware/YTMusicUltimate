@@ -23,12 +23,20 @@ void YTMURestoreTransitionControlFrames(UIView *controls);
 - (void)prepareIncomingContext:(id)context;
 - (BOOL)allowsTransitionsForPlaybackController:(id)controller current:(id)current upcoming:(id)upcoming;
 - (double)crossfadeDuration;
-- (void)nativeFadeWillStart:(id)multiPlayer;
+- (void)nativeFadeWillStart:(id)multiPlayer outgoingContext:(id)outgoing activeClip:(id)clip;
 - (void)nativeFadeStarted:(id)multiPlayer outgoingContext:(id)outgoing incomingContext:(id)incoming;
 - (void)pauseMix;
 - (void)resumeMix;
+- (void)nativePlaybackPaused;
+- (void)nativePlaybackResumed;
 - (void)sequenceChanged;
 - (void)nativeRateChanged:(float)rate player:(id)player;
+- (void)registerArtworkController:(id)controller;
+- (void)artworkResponseChanged:(id)response controller:(id)controller;
+- (BOOL)shouldAnimateNativeArtworkImage:(id)view;
+- (void)artworkImageChanged:(id)view;
+- (void)artworkLayoutChanged:(id)view;
+- (void)cancelArtworkForOverlay:(id)view;
 - (void)cancel;
 @end
 

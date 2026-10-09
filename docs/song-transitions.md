@@ -23,13 +23,15 @@ crossfade. Ordinary audio tracks accept an unassigned server crossfade experimen
 (Unknown = 0); an explicit Disabled = 1 response still vetoes transitions. Song
 classification uses the verified protobuf music type instead of requiring the
 user to select audio-only mode. Sequential album tracks retain native transitions.
-Native engine flags are enabled at startup independently of the saved on/off
+Native engine flags are enabled at startup through the actual `YTColdConfig`
+facade getters read by playback initialization, independently of the saved on/off
 toggle; transition scheduling stays off until a mode is enabled.
 Videos, live streams, podcasts, casting, picture-in-picture and repeat-one bypass
 mixing. User-selected playback speeds other than 1× suppress tempo adjustment.
 
-**Status: the initial device test reported no audible overlap. Activation and
-layout fixes require a new device test; AutoMix is not validated as complete.**
+**Status: both earlier device builds reported no audible overlap. The new build
+corrects the engine facade flags and current-response getter. Audible playback
+and artwork synchronization still require a device test; AutoMix is unverified.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -68,6 +70,23 @@ beats within the bounded windows, preserve the incoming intro, change incoming
 tempo by at most ±6%, then smoothly restore 1× over approximately two seconds
 after overlap. The native fade envelope is retained.
 
+## Album artwork during AutoMix
+
+In Song mode, AutoMix dissolves the playing cover into the incoming song's native
+cover during the actual overlap, including musical-analysis fallback to crossfade.
+The outgoing image is retained in one noninteractive image view over the native
+thumbnail. YouTube keeps ownership of incoming image loading and caching; the
+feature makes no extra artwork requests and adds no settings or controls.
+
+Progress follows the outgoing native player's media clock, rather than a
+wall-clock animation, and shares the existing 20 Hz transition timer. Pause
+holds the current blend; buffering cannot advance it. If the incoming cover
+loads late, the old cover stays visible until it can dissolve over the remaining
+overlap. No timer runs for an idle cover. Missing or hidden artwork skips the
+effect. Mode changes, seeks/skips, queue replacement, route changes,
+interruptions, backgrounding and cancellation release the temporary image.
+Native thumbnail layout, clipping and cover content mode remain in use.
+
 ## GitHub Action delivery
 
 Run **Build and Release YTMusicUltimate** with the existing `ipa_url` input set to
@@ -103,6 +122,10 @@ python3 scripts/verify_transition_ipa.py input.ipa --output output.ipa --report 
   audible overlap and seamless sequential album playback.
 - Use compatible beats, mismatched tempos, quiet intros, ambiguous rhythms and
   short songs. Check ±6% tempo adaptation and smooth recovery without pitch drift.
+- With AutoMix selected in Song mode, verify that both covers blend during the
+  audio overlap (including analysis fallback), pause/buffering hold the blend,
+  and switching to Video mode or backgrounding leaves no stale cover. Test slow
+  artwork loading and consecutive tracks sharing the same cover.
 - Verify one queue advancement per song, correct progress and artwork/title in
   the app and lock screen, pause/resume during overlap, and background playback.
 - During overlap, seek, skip, edit/reorder the queue, trigger SponsorBlock,

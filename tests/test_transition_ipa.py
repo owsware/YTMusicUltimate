@@ -46,7 +46,9 @@ class DeliveryTests(unittest.TestCase):
             if injected:
                 archive.writestr(root + "YTMusicUltimate.dylib", b"YTMUSongTransitionCoordinator\0"
                                  b"SongTransitionsSettingsController\0songTransitionsEnabled\0YTMUPlayerTransitionButton\0"
-                                 b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:" if code else b"old tweak")
+                                 b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:\0"
+                                 b"iosPlayerClientSharedConfigEnableCrossfade\0musicPlaybackClientConfigIosEnableCrossfade\0"
+                                 b"prepareArtworkForOutgoingContext:clip:" if code else b"old tweak")
                 if resources:
                     archive.writestr(root + "YTMusicUltimate.bundle/en.lproj/Localizable.strings",
                                      b'"SONG_TRANSITIONS" = "Song Transitions";\n"AUTOMIX" = "AutoMix";')

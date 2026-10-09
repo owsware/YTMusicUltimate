@@ -39,6 +39,17 @@ static BOOL YTMUOwnsTransitions(void) {
 %end
 %end
 
+%group TransitionEngineFlags
+%hook YTColdConfig
+- (BOOL)iosPlayerClientSharedConfigEnableCrossfade {
+    return YTMUOwnsTransitions() ? YES : %orig;
+}
+- (BOOL)musicPlaybackClientConfigIosEnableCrossfade {
+    return YTMUOwnsTransitions() ? YES : %orig;
+}
+%end
+%end
+
 %group TransitionSequencer
 %hook YTMPlayerSequencerController
 - (id)initWithPlayerViewController:(id)controller {
@@ -97,7 +108,7 @@ static BOOL YTMUOwnsTransitions(void) {
 %group TransitionNativePlayer
 %hook MLHAMMultiPlayer
 - (void)spawnCrossfadeWithActiveContext:(id)outgoing activeClip:(id)clip nextContext:(id)incoming {
-    [[YTMUSongTransitionCoordinator shared] nativeFadeWillStart:self];
+    [[YTMUSongTransitionCoordinator shared] nativeFadeWillStart:self outgoingContext:outgoing activeClip:clip];
     [[YTMUSongTransitionCoordinator shared] prepareIncomingContext:incoming];
     %orig;
     /* The native engine alone activates the incoming clip and advances the queue. */
@@ -106,12 +117,12 @@ static BOOL YTMUOwnsTransitions(void) {
     });
 }
 - (void)pauseWithStoppageReason:(int)reason {
-    [[YTMUSongTransitionCoordinator shared] pauseMix];
+    [[YTMUSongTransitionCoordinator shared] nativePlaybackPaused];
     %orig;
 }
 - (void)play {
     %orig;
-    [[YTMUSongTransitionCoordinator shared] resumeMix];
+    [[YTMUSongTransitionCoordinator shared] nativePlaybackResumed];
 }
 - (void)setRate:(float)rate {
     float previous = ((float (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"rate"));
@@ -139,6 +150,42 @@ static BOOL YTMUOwnsTransitions(void) {
 + (BOOL)isCrossfadeTransitionEnabledForCurrentPlayerResponse:(id)current upcomingPlayerResponse:(id)upcoming {
     if (YTMUOwnsTransitions()) return YTMUTransitionsAllowContentPair(current, upcoming);
     return %orig;
+}
+%end
+%end
+
+%group TransitionArtworkUI
+%hook YTMVideoOverlayViewController
+- (void)viewDidLoad {
+    %orig;
+    [[YTMUSongTransitionCoordinator shared] registerArtworkController:self];
+}
+- (void)setPlayerResponse:(id)response CPN:(id)cpn {
+    %orig;
+    [[YTMUSongTransitionCoordinator shared] registerArtworkController:self];
+    [[YTMUSongTransitionCoordinator shared] artworkResponseChanged:response controller:self];
+}
+%end
+%hook YTMVideoOverlayView
+- (void)layoutSubviews {
+    %orig;
+    [[YTMUSongTransitionCoordinator shared] artworkLayoutChanged:self];
+}
+- (void)updateThumbnailVisibility {
+    %orig;
+    [[YTMUSongTransitionCoordinator shared] artworkLayoutChanged:self];
+}
+- (void)setUserContentMode:(NSUInteger)mode {
+    NSUInteger previous = ((NSUInteger (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"userContentMode"));
+    %orig;
+    if (previous != mode) [[YTMUSongTransitionCoordinator shared] cancelArtworkForOverlay:self];
+}
+%end
+%hook YTImageView
+- (void)setImage:(id)image animated:(BOOL)animated {
+    BOOL animate = [[YTMUSongTransitionCoordinator shared] shouldAnimateNativeArtworkImage:self] && animated;
+    %orig(image, animate);
+    [[YTMUSongTransitionCoordinator shared] artworkImageChanged:self];
 }
 %end
 %end
@@ -194,6 +241,7 @@ static BOOL YTMUOwnsTransitions(void) {
         if (YTMUTransitionsCrossfadeSupported()) {
             %init(TransitionSettings);
             %init(TransitionContentPolicy);
+            %init(TransitionEngineFlags);
             Class sequencer = NSClassFromString(@"YTMPlayerSequencerController");
             if (YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"initWithPlayerViewController:"), "@", @[@"@"]) &&
                 YTMUTransitionMethodMatches(sequencer, NSSelectorFromString(@"updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:"), "v", @[@"@", @"q", @"B"])) {
@@ -214,6 +262,24 @@ static BOOL YTMUOwnsTransitions(void) {
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigMusicPlaybackClientConfigImpl"), NSSelectorFromString(@"iosEnableCrossfade"), "B", @[])) { %init(TransitionMusicFlag); }
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[])) { %init(TransitionPlayerFlag); }
             if (YTMUTransitionsAutoMixSupported()) { %init(TransitionUpcomingPlayback); }
+            Class overlayController = NSClassFromString(@"YTMVideoOverlayViewController");
+            Class overlay = NSClassFromString(@"YTMVideoOverlayView");
+            Class imageView = NSClassFromString(@"YTImageView");
+            if (YTMUTransitionMethodMatches(overlayController, @selector(viewDidLoad), "v", @[]) &&
+                YTMUTransitionMethodMatches(overlayController, NSSelectorFromString(@"setPlayerResponse:CPN:"), "v", @[@"@", @"@"]) &&
+                YTMUTransitionMethodMatches(overlayController, NSSelectorFromString(@"overlayView"), "@", @[]) &&
+                YTMUTransitionMethodMatches(overlayController, NSSelectorFromString(@"currentVideoID"), "@", @[]) &&
+                YTMUTransitionMethodMatches(overlay, @selector(layoutSubviews), "v", @[]) &&
+                YTMUTransitionMethodMatches(overlay, NSSelectorFromString(@"updateThumbnailVisibility"), "v", @[]) &&
+                YTMUTransitionMethodMatches(overlay, NSSelectorFromString(@"setUserContentMode:"), "v", @[@"Q"]) &&
+                YTMUTransitionMethodMatches(overlay, NSSelectorFromString(@"userContentMode"), "Q", @[]) &&
+                YTMUTransitionMethodMatches(overlay, NSSelectorFromString(@"shouldHideThumbnail"), "B", @[]) &&
+                YTMUTransitionMethodMatches(overlay, NSSelectorFromString(@"thumbnailView"), "@", @[]) &&
+                YTMUTransitionMethodMatches(imageView, NSSelectorFromString(@"image"), "@", @[]) &&
+                YTMUTransitionMethodMatches(imageView, NSSelectorFromString(@"imageView"), "@", @[]) &&
+                YTMUTransitionMethodMatches(imageView, NSSelectorFromString(@"setImage:animated:"), "v", @[@"@", @"B"])) {
+                %init(TransitionArtworkUI);
+            }
         }
         Class controls = NSClassFromString(@"YTMPlayerControlsView");
         Class nowPlaying = NSClassFromString(@"YTMNowPlayingView");

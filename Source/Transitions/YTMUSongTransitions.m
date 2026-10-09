@@ -57,6 +57,12 @@ static int64_t integerGetter(id object, NSString *name, int64_t fallback) {
     return fallback;
 }
 
+static double doubleGetter(id object, NSString *name, double fallback) {
+    SEL selector = NSSelectorFromString(name);
+    if (!YTMUTransitionMethodMatches([object class], selector, "d", @[])) return fallback;
+    return ((double (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
 static id objectIvar(id object, const char *name) {
     if (!object) return nil;
     Ivar ivar = class_getInstanceVariable([object class], name);
@@ -129,6 +135,9 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"seekToTime:toleranceBefore:toleranceAfter:seekSource:"), "v", @[@"d", @"d", @"d", @"i"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigMusicPlaybackClientConfigImpl"), NSSelectorFromString(@"iosEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"musicPlaybackClientConfigIosEnableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"contentPlayerResponse"), "@", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"shouldPlaybackController:applyTransitionEffect:currentPlayerResponse:upcomingPlayerResponse:"), "B", @[@"@", @"@", @"@", @"@"]);
     });
     return supported;
@@ -239,6 +248,24 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 @property (nonatomic) BOOL applyingRate;
 @property (nonatomic) double previousMixTime;
 @property (nonatomic) NSUInteger stalledTicks;
+@property (nonatomic, strong) NSHashTable *artworkControllers;
+@property (nonatomic, weak) id artworkController;
+@property (nonatomic, weak) UIView *artworkOverlay;
+@property (nonatomic, weak) UIView *artworkThumbnail;
+@property (nonatomic, weak) id artworkClockPlayer;
+@property (nonatomic, strong) UIImageView *outgoingArtwork;
+@property (nonatomic, copy) NSString *artworkIncomingID;
+@property (nonatomic) BOOL artworkRunning;
+@property (nonatomic) BOOL artworkIncomingAssigned;
+@property (nonatomic) BOOL artworkIncomingLoaded;
+@property (nonatomic) double artworkStartTime;
+@property (nonatomic) double artworkDuration;
+@property (nonatomic) double artworkProgress;
+@property (nonatomic) double artworkRevealStart;
+@property (nonatomic) BOOL playbackPaused;
+- (void)prepareArtworkForOutgoingContext:(id)context clip:(id)clip;
+- (BOOL)updateArtworkProgress;
+- (void)cancelArtwork;
 @end
 
 @implementation YTMUSongTransitionCoordinator
@@ -254,11 +281,14 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         _cache = [NSCache new]; _cache.countLimit = 64; _cache.totalCostLimit = 64 * sizeof(YTMUMixAnalysis);
         _cacheKeys = [NSMutableArray array];
         _renderers = [NSHashTable weakObjectsHashTable];
+        _artworkControllers = [NSHashTable weakObjectsHashTable];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(preferencesChanged:)
                                                      name:NSUserDefaultsDidChangeNotification object:nil];
         for (NSString *name in @[AVAudioSessionRouteChangeNotification, AVAudioSessionInterruptionNotification,
                                  AVAudioSessionMediaServicesWereResetNotification, NSProcessInfoPowerStateDidChangeNotification])
             [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(environmentChanged:) name:name object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artworkEnvironmentChanged:)
+                                                     name:UIApplicationWillResignActiveNotification object:nil];
     }
     return self;
 }
@@ -298,13 +328,13 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (double)crossfadeDuration {
     if (boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES)) return 0;
-    NSString *currentID = videoID(objectGetter(self.playerController, @"playerResponse"));
+    NSString *currentID = videoID(objectGetter(self.playerController, @"contentPlayerResponse"));
     NSString *nextID = objectGetter(self.sequencer, @"upcomingVideoID");
     NSString *pair = currentID && nextID ? [NSString stringWithFormat:@"%@/%@", currentID, nextID] : nil;
     if ([self.preferences[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix && self.plan.kind != YTMUMixBypass && [pair isEqualToString:self.pair])
         return self.plan.duration;
     double duration = [self.preferences[@"crossfadeDuration"] doubleValue];
-    double currentDuration = responseDuration(objectGetter(self.playerController, @"playerResponse"));
+    double currentDuration = responseDuration(objectGetter(self.playerController, @"contentPlayerResponse"));
     return currentDuration > 0 ? MIN(duration, currentDuration / 2) : duration;
 }
 - (void)observeCurrentResponse:(id)current upcomingResponse:(id)upcoming {
@@ -374,7 +404,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         dispatch_async(dispatch_get_main_queue(), ^{ [self observeUpcomingPlaybackData:data]; });
         return;
     }
-    id current = objectGetter(self.playerController, @"playerResponse");
+    id current = objectGetter(self.playerController, @"contentPlayerResponse");
     id upcoming = objectGetter(data, @"playerResponse");
     id controller = objectIvar(self.playerController, "_playbackController");
     Class policy = NSClassFromString(@"YTMCrossfadeTransitionPolicy");
@@ -420,19 +450,24 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         }
     });
 }
-- (void)nativeFadeWillStart:(id)multiPlayer {
+- (void)nativeFadeWillStart:(id)multiPlayer outgoingContext:(id)outgoing activeClip:(id)clip {
     if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [self nativeFadeWillStart:multiPlayer]; }); return;
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativeFadeWillStart:multiPlayer outgoingContext:outgoing activeClip:clip]; }); return;
     }
     if (!YTMUTransitionsRequested()) return;
     self.handoffInProgress = YES; self.nativeOverlapPlayer = multiPlayer;
+    [self prepareArtworkForOutgoingContext:outgoing clip:clip];
 }
 - (void)nativeFadeStarted:(id)multiPlayer outgoingContext:(id)outgoing incomingContext:(id)incoming {
     if (![NSThread isMainThread] || !YTMUTransitionsRequested()) return;
     self.handoffInProgress = NO;
     id nativeState = objectGetter(multiPlayer, @"playerContextState");
-    if (objectGetter(nativeState, @"activePlayerContext") != incoming || !objectGetter(nativeState, @"backgroundPlayerContext")) return;
+    if (objectGetter(nativeState, @"activePlayerContext") != incoming || !objectGetter(nativeState, @"backgroundPlayerContext")) {
+        [self cancelArtwork]; return;
+    }
     self.nativeOverlapPlayer = multiPlayer;
+    self.artworkRunning = self.outgoingArtwork != nil;
+    if (self.artworkRunning) [self resumeMix];
     if (self.plan.kind != YTMUMixAutoMix ||
         [self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
     id player = objectGetter(incoming, @"player");
@@ -475,8 +510,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     self.applyingRate = NO;
 }
 - (void)tick:(NSTimer *)timer {
+    BOOL artworkActive = [self updateArtworkProgress];
     id player = self.incomingPlayer;
-    if (!player) { [self pauseMix]; return; }
+    if (!player) { if (!artworkActive) [self pauseMix]; return; }
     YTMUNativePlayerTime time = ((YTMUNativePlayerTime (*)(id, SEL))objc_msgSend)(player, NSSelectorFromString(@"currentTime"));
     double elapsed = time.mediaTime - self.mixStart;
     if (!isfinite(elapsed) || elapsed < -0.1 || !YTMUTransitionsRequested()) { [self cancel]; return; }
@@ -487,7 +523,8 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     double progress = (elapsed - self.mixDuration) / 2;
     [self setIncomingRate:YTMUMixRateAtProgress(self.initialRate, progress)];
     if (progress >= 1) {
-        self.incomingPlayer = nil; self.mixingPlayer = nil; [self pauseMix];
+        self.incomingPlayer = nil; self.mixingPlayer = nil;
+        if (!artworkActive) [self pauseMix];
         [self restorePitchAlgorithms];
     }
 }
@@ -497,10 +534,22 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)resumeMix {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self resumeMix]; }); return; }
-    if (!self.incomingPlayer || self.timer) return;
+    if (self.playbackPaused || (!self.incomingPlayer && !self.artworkRunning) || self.timer) return;
     self.timer = [NSTimer timerWithTimeInterval:1.0 / 20 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
     self.timer.tolerance = 0.01;
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
+}
+- (void)nativePlaybackPaused {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativePlaybackPaused]; }); return;
+    }
+    self.playbackPaused = YES; [self pauseMix];
+}
+- (void)nativePlaybackResumed {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativePlaybackResumed]; }); return;
+    }
+    self.playbackPaused = NO; [self resumeMix];
 }
 - (void)nativeRateChanged:(float)rate player:(id)player {
     if (![NSThread isMainThread]) {
@@ -517,7 +566,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     }
     if (!self.pair) return;
     NSArray<NSString *> *identifiers = [self.pair componentsSeparatedByString:@"/"];
-    NSString *current = videoID(objectGetter(self.playerController, @"playerResponse"));
+    NSString *current = videoID(objectGetter(self.playerController, @"contentPlayerResponse"));
     NSString *upcoming = objectGetter(self.sequencer, @"upcomingVideoID");
     if (identifiers.count != 2) { [self cancel]; return; }
     /* Queue extension and the native handoff also rebuild the sequence. They
@@ -530,6 +579,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 - (void)cancel {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self cancel]; }); return; }
     self.generation++; self.pair = nil;
+    [self cancelArtwork];
     [self.analysisQueue cancelAllOperations]; [self pauseMix]; [self setIncomingRate:1];
     self.incomingPlayer = nil; self.mixingPlayer = nil;
     self.plan = (YTMUMixPlan){YTMUMixBypass, 0, 1};
@@ -555,6 +605,127 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         objc_setAssociatedObject(renderer, YTMUOriginalPitchKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
     [self.renderers removeAllObjects];
+}
+- (void)registerArtworkController:(id)controller {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self registerArtworkController:controller]; }); return;
+    }
+    [self.artworkControllers addObject:controller];
+}
+- (BOOL)artworkIsVisible {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+        !self.artworkThumbnail.window || boolGetter(self.artworkOverlay, @"shouldHideThumbnail", YES)) return NO;
+    for (UIView *view = self.artworkThumbnail; view; view = view.superview)
+        if (view.hidden || view.alpha < 0.01) return NO;
+    return YES;
+}
+- (void)prepareArtworkForOutgoingContext:(id)context clip:(id)clip {
+    [self cancelArtwork];
+    if ([self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    NSArray<NSString *> *pair = [self.pair componentsSeparatedByString:@"/"];
+    if (pair.count != 2) return;
+    id player = objectGetter(context, @"player");
+    SEL timeSelector = NSSelectorFromString(@"currentTime");
+    if (!YTMUTransitionMethodMatches([player class], timeSelector, "{?=ddd}", @[])) return;
+    YTMUNativePlayerTime time = ((YTMUNativePlayerTime (*)(id, SEL))objc_msgSend)(player, timeSelector);
+    if (!isfinite(time.mediaTime)) return;
+    double end = doubleGetter(clip, @"startTime", NAN) + doubleGetter(clip, @"duration", NAN);
+    double duration = end - time.mediaTime;
+    if (!isfinite(duration) || duration <= 0 || duration > 12.25) duration = [self crossfadeDuration];
+    if (!isfinite(duration) || duration <= 0 || duration > 12.25) return;
+    for (id controller in self.artworkControllers) {
+        if (![objectGetter(controller, @"currentVideoID") isEqual:pair[0]]) continue;
+        UIView *overlay = objectGetter(controller, @"overlayView");
+        UIView *thumbnail = objectGetter(overlay, @"thumbnailView");
+        if (![overlay isKindOfClass:UIView.class] || ![thumbnail isKindOfClass:UIView.class]) continue;
+        self.artworkOverlay = overlay; self.artworkThumbnail = thumbnail;
+        if (![self artworkIsVisible]) continue;
+        UIImage *image = objectGetter(thumbnail, @"image");
+        UIImageView *nativeImage = objectGetter(thumbnail, @"imageView");
+        if (![image isKindOfClass:UIImage.class] || ![nativeImage isKindOfClass:UIImageView.class] ||
+            nativeImage.superview != thumbnail || CGRectIsEmpty(nativeImage.bounds)) continue;
+        self.artworkController = controller; self.artworkClockPlayer = player;
+        self.artworkIncomingID = pair[1]; self.artworkStartTime = time.mediaTime; self.artworkDuration = duration;
+        UIImageView *cover = [[UIImageView alloc] initWithImage:image];
+        cover.frame = nativeImage.frame; cover.contentMode = nativeImage.contentMode;
+        cover.clipsToBounds = nativeImage.clipsToBounds; cover.layer.cornerRadius = nativeImage.layer.cornerRadius;
+        cover.userInteractionEnabled = NO; cover.accessibilityElementsHidden = YES;
+        cover.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        self.outgoingArtwork = cover; [thumbnail addSubview:cover];
+        return;
+    }
+    [self cancelArtwork];
+}
+- (void)artworkResponseChanged:(id)response controller:(id)controller {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self artworkResponseChanged:response controller:controller]; }); return;
+    }
+    if (!self.outgoingArtwork || controller != self.artworkController) return;
+    if (![videoID(response) isEqual:self.artworkIncomingID]) { [self cancelArtwork]; return; }
+    self.artworkIncomingAssigned = YES;
+    /* A cached native request can finish synchronously inside the response setter. */
+    UIImage *image = objectGetter(self.artworkThumbnail, @"image");
+    if (image && image != self.outgoingArtwork.image) [self artworkImageChanged:self.artworkThumbnail];
+}
+- (BOOL)shouldAnimateNativeArtworkImage:(id)view {
+    return ![NSThread isMainThread] || !self.outgoingArtwork || view != self.artworkThumbnail;
+}
+- (void)artworkImageChanged:(id)view {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self artworkImageChanged:view]; }); return;
+    }
+    if (!self.outgoingArtwork || view != self.artworkThumbnail ||
+        (!self.artworkIncomingAssigned && ![objectGetter(self.artworkController, @"currentVideoID") isEqual:self.artworkIncomingID])) return;
+    if (![objectGetter(view, @"image") isKindOfClass:UIImage.class]) return;
+    if (!self.artworkIncomingLoaded) self.artworkRevealStart = self.artworkProgress;
+    self.artworkIncomingLoaded = YES;
+    [self.artworkThumbnail bringSubviewToFront:self.outgoingArtwork];
+}
+- (void)artworkLayoutChanged:(id)view {
+    if (![NSThread isMainThread] || view != self.artworkOverlay || !self.outgoingArtwork) return;
+    if (![self artworkIsVisible]) { [self cancelArtwork]; return; }
+    UIImageView *image = objectGetter(self.artworkThumbnail, @"imageView");
+    if (![image isKindOfClass:UIImageView.class] || image.superview != self.artworkThumbnail) { [self cancelArtwork]; return; }
+    self.outgoingArtwork.frame = image.frame; self.outgoingArtwork.contentMode = image.contentMode;
+    self.outgoingArtwork.layer.cornerRadius = image.layer.cornerRadius;
+    [self.artworkThumbnail bringSubviewToFront:self.outgoingArtwork];
+}
+- (BOOL)updateArtworkProgress {
+    if (!self.outgoingArtwork || !self.artworkRunning) return NO;
+    id state = objectGetter(self.nativeOverlapPlayer, @"playerContextState");
+    if (![self artworkIsVisible] || !YTMUTransitionsRequested() ||
+        !objectGetter(state, @"backgroundPlayerContext") || !self.artworkClockPlayer) { [self cancelArtwork]; return NO; }
+    YTMUNativePlayerTime time = ((YTMUNativePlayerTime (*)(id, SEL))objc_msgSend)(self.artworkClockPlayer, NSSelectorFromString(@"currentTime"));
+    double elapsed = time.mediaTime - self.artworkStartTime;
+    if (!isfinite(elapsed) || elapsed < -0.1) { [self cancelArtwork]; return NO; }
+    self.artworkProgress = fmin(1, fmax(self.artworkProgress, elapsed / self.artworkDuration));
+    if (self.artworkProgress >= 1) { [self cancelArtwork]; return NO; }
+    /* Wait for real incoming art. A late image fades over the remaining overlap
+       instead of exposing the loader's placeholder or using a wall-clock delay. */
+    if (self.artworkIncomingLoaded)
+        self.outgoingArtwork.alpha = (1 - self.artworkProgress) / MAX(0.001, 1 - self.artworkRevealStart);
+    return YES;
+}
+- (void)cancelArtworkForOverlay:(id)view {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self cancelArtworkForOverlay:view]; }); return;
+    }
+    if (view == self.artworkOverlay) [self cancelArtwork];
+}
+- (void)artworkEnvironmentChanged:(NSNotification *)notification {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self artworkEnvironmentChanged:notification]; }); return;
+    }
+    [self cancelArtwork];
+    if (!self.incomingPlayer) [self pauseMix];
+}
+- (void)cancelArtwork {
+    [self.outgoingArtwork removeFromSuperview]; self.outgoingArtwork = nil;
+    self.artworkController = nil; self.artworkOverlay = nil; self.artworkThumbnail = nil;
+    self.artworkClockPlayer = nil; self.artworkIncomingID = nil; self.artworkRunning = NO;
+    self.artworkIncomingAssigned = NO; self.artworkIncomingLoaded = NO;
+    self.artworkProgress = 0; self.artworkRevealStart = 0;
 }
 @end
 

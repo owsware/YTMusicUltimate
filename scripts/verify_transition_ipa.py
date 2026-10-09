@@ -139,12 +139,17 @@ EXPECTED_METHODS = {
     "MLHAMQueuePlayerContext": {"audioFadeController": "@16@0:8"},
     "MLAudioFadeController": {"setPendingTransitionEffects:": "v24@0:8@16"},
     "YTPlayerViewController": {
+        "contentPlayerResponse": "@16@0:8",
         "shouldPlaybackController:applyTransitionEffect:currentPlayerResponse:upcomingPlayerResponse:": "B48@0:8@16@24@32@40",
         "seekToTime:": "v24@0:8d16", "seekToTime:seekSource:": "v28@0:8d16i24",
         "seekToTime:toleranceBefore:toleranceAfter:seekSource:": "v44@0:8d16d24d32i40",
     },
     "YTColdConfigMusicPlaybackClientConfigImpl": {"iosEnableCrossfade": "B16@0:8"},
     "YTColdConfigIosPlayerClientSharedConfigImpl": {"enableCrossfade": "B16@0:8"},
+    "YTColdConfig": {
+        "iosPlayerClientSharedConfigEnableCrossfade": "B16@0:8",
+        "musicPlaybackClientConfigIosEnableCrossfade": "B16@0:8",
+    },
     "YTMCrossfadeTransitionPolicy": {
         "+isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:": "B32@0:8@16@24",
     },
@@ -155,6 +160,18 @@ EXPECTED_METHODS = {
     "YTMNowPlayingView": {
         "sizeThatFits:": "{CGSize=dd}32@0:8{CGSize=dd}16", "playerControlsView": "@16@0:8",
         "playerControlsViewHeight": "d16@0:8", "layoutMod3ActionBarScrubberAbovePlayerControls": "v16@0:8",
+    },
+    "YTMVideoOverlayViewController": {
+        "viewDidLoad": "v16@0:8", "setPlayerResponse:CPN:": "v32@0:8@16@24",
+        "overlayView": "@16@0:8", "currentVideoID": "@16@0:8",
+    },
+    "YTMVideoOverlayView": {
+        "layoutSubviews": "v16@0:8", "updateThumbnailVisibility": "v16@0:8",
+        "setUserContentMode:": "v24@0:8Q16", "userContentMode": "Q16@0:8",
+        "shouldHideThumbnail": "B16@0:8", "thumbnailView": "@16@0:8",
+    },
+    "YTImageView": {
+        "image": "@16@0:8", "imageView": "@16@0:8", "setImage:animated:": "v28@0:8@16B24",
     },
 }
 
@@ -209,7 +226,9 @@ def verify(input_path, output_path=None):
                 raise ValueError("Could not locate the injected transition library")
             tweak = archive.read(libraries[0])
             for marker in (b"YTMUSongTransitionCoordinator", b"SongTransitionsSettingsController", b"songTransitionsEnabled",
-                           b"YTMUPlayerTransitionButton", b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:"):
+                           b"YTMUPlayerTransitionButton", b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:",
+                           b"iosPlayerClientSharedConfigEnableCrossfade", b"musicPlaybackClientConfigIosEnableCrossfade",
+                           b"prepareArtworkForOutgoingContext:clip:"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()
