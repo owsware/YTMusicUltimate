@@ -36,16 +36,37 @@ static BOOL YTMUOwnsTransitions(void) {
 - (BOOL)enableCrossfade {
     return YTMUOwnsTransitions() ? YES : %orig;
 }
+- (BOOL)enableVolumeFading {
+    BOOL own = YTMUOwnsTransitions();
+    YTMURecordTransitionEvent(@"volume-engine", own ? @"native-transition-provider-enabled" : @"native-setting");
+    return own ? YES : %orig;
+}
 %end
 %end
 
 %group TransitionEngineFlags
 %hook YTColdConfig
 - (BOOL)iosPlayerClientSharedConfigEnableCrossfade {
-    return YTMUOwnsTransitions() ? YES : %orig;
+    BOOL own = YTMUOwnsTransitions();
+    YTMURecordTransitionEvent(@"engine-flag", own ? @"crossfade-enabled-at-initialization" : @"native-setting");
+    return own ? YES : %orig;
 }
 - (BOOL)musicPlaybackClientConfigIosEnableCrossfade {
     return YTMUOwnsTransitions() ? YES : %orig;
+}
+- (BOOL)iosPlayerClientSharedConfigEnableVolumeFading {
+    return YTMUOwnsTransitions() ? YES : %orig;
+}
+%end
+%end
+
+%group TransitionNativePool
+%hook MLPlayerPoolImpl
+- (id)acquireQueuePlayerWithStickySettings:(id)settings mediaPlayerResources:(id)resources {
+    id result = %orig;
+    id provider = ((id (*)(id, SEL))objc_msgSend)(resources, NSSelectorFromString(@"audioTransitionProvider"));
+    YTMURecordTransitionEvent(@"native-engine", [NSString stringWithFormat:@"player=%@; audio-transition-provider=%@", [result class], [provider class]]);
+    return result;
 }
 %end
 %end
@@ -59,8 +80,9 @@ static BOOL YTMUOwnsTransitions(void) {
 }
 - (id)crossfadeTransitionFromSettings {
     if (!YTMUOwnsTransitions()) return %orig;
-    if (!YTMUTransitionsRequested()) return nil;
-    double duration = [[YTMUSongTransitionCoordinator shared] crossfadeDuration];
+    if (!YTMUTransitionsRequested()) { YTMURecordTransitionEvent(@"transition", @"disabled"); return nil; }
+    double duration = [[YTMUSongTransitionCoordinator shared] crossfadeDurationForSequencer:self];
+    YTMURecordTransitionEvent(@"transition", [NSString stringWithFormat:@"scheduled %.2f seconds", duration]);
     return duration > 0 ? [[NSClassFromString(@"YTCrossfadeTransition") alloc] initWithDuration:duration] : nil;
 }
 - (void)updateUpcomingVideoIDAndLatencyTickLoggerForSequence:(id)sequence currentSequenceIndex:(NSInteger)index isLoopAllEnabled:(BOOL)loopAll {
@@ -85,8 +107,9 @@ static BOOL YTMUOwnsTransitions(void) {
     if (!YTMUOwnsTransitions() ||
         (![effect isKindOfClass:NSClassFromString(@"YTCrossfadeTransition")] &&
          ![effect isKindOfClass:NSClassFromString(@"MLAudioCrossfadeTransition")])) return original;
-    /* The native policy hook accepts unassigned song experiments; content vetoes remain. */
+    /* Manual transitions override the account experiment; content vetoes remain. */
     BOOL allowed = original && [[YTMUSongTransitionCoordinator shared] allowsTransitionsForPlaybackController:controller current:current upcoming:upcoming];
+    YTMURecordTransitionEvent(@"delegate", [NSString stringWithFormat:@"native=%d final=%d effect=%@", original, allowed, [effect class]]);
     if (allowed) [[YTMUSongTransitionCoordinator shared] observeCurrentResponse:current upcomingResponse:upcoming];
     return allowed;
 }
@@ -108,6 +131,7 @@ static BOOL YTMUOwnsTransitions(void) {
 %group TransitionNativePlayer
 %hook MLHAMMultiPlayer
 - (void)spawnCrossfadeWithActiveContext:(id)outgoing activeClip:(id)clip nextContext:(id)incoming {
+    if (YTMUTransitionsRequested()) YTMURecordTransitionEvent(@"overlap", @"native-spawn-called");
     [[YTMUSongTransitionCoordinator shared] nativeFadeWillStart:self outgoingContext:outgoing activeClip:clip];
     [[YTMUSongTransitionCoordinator shared] prepareIncomingContext:incoming];
     %orig;
@@ -115,6 +139,28 @@ static BOOL YTMUOwnsTransitions(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [[YTMUSongTransitionCoordinator shared] nativeFadeStarted:self outgoingContext:outgoing incomingContext:incoming];
     });
+}
+- (BOOL)shouldApplyTransitionEffect:(id)effect previousClip:(id)previous toClip:(id)next {
+    BOOL allowed = %orig;
+    if (YTMUTransitionsRequested() && [effect isKindOfClass:NSClassFromString(@"MLAudioCrossfadeTransition")])
+        YTMURecordTransitionEvent(@"audio-policy", allowed ? @"native-accepted" : @"native-rejected");
+    return allowed;
+}
+- (void)commitTransitionEffects {
+    %orig;
+    if (YTMUTransitionsRequested()) {
+        id state = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"playerContextState"));
+        id value = ((id (*)(id, SEL))objc_msgSend)(state, NSSelectorFromString(@"playerContexts"));
+        if (![value isKindOfClass:NSArray.class]) return;
+        NSArray *contexts = value;
+        double largest = 0;
+        for (id context in contexts) {
+            SEL selector = NSSelectorFromString(@"crossfadeDuration");
+            if (YTMUTransitionMethodMatches([context class], selector, "d", @[]))
+                largest = fmax(largest, ((double (*)(id, SEL))objc_msgSend)(context, selector));
+        }
+        YTMURecordTransitionEvent(@"audio-contexts", [NSString stringWithFormat:@"count=%lu max-fade=%.2f seconds", (unsigned long)contexts.count, largest]);
+    }
 }
 - (void)pauseWithStoppageReason:(int)reason {
     [[YTMUSongTransitionCoordinator shared] nativePlaybackPaused];
@@ -127,9 +173,26 @@ static BOOL YTMUOwnsTransitions(void) {
 - (void)setRate:(float)rate {
     float previous = ((float (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"rate"));
     if (!isfinite(rate) || fabsf(previous - rate) > 0.001)
-        [[YTMUSongTransitionCoordinator shared] cancel];
+        [[YTMUSongTransitionCoordinator shared] nativePlaybackSpeedWillChange];
     %orig;
     [[YTMUSongTransitionCoordinator shared] nativeRateChanged:rate player:self];
+}
+%end
+%end
+
+%group TransitionQueueEligibility
+%hook YTIPlayerResponse
+- (BOOL)canEnqueueUpcomingPlaybacks {
+    BOOL original = %orig;
+    if (!YTMUTransitionsRequested()) return original;
+    BOOL compatible = YTMUTransitionsCanReuseNativeQueue(self);
+    YTMURecordTransitionEvent(@"native-queue", [NSString stringWithFormat:@"enqueue=%d gapless-compatible-song=%d", original, compatible]);
+    return original || compatible;
+}
+- (BOOL)canBeEnqueuedGaplessly {
+    BOOL result = %orig;
+    if (YTMUTransitionsRequested()) YTMURecordTransitionEvent(@"native-gapless", result ? @"compatible" : @"incompatible");
+    return result;
 }
 %end
 %end
@@ -238,6 +301,7 @@ static BOOL YTMUOwnsTransitions(void) {
         for (NSString *key in defaults) if (!preferences[key]) { preferences[key] = defaults[key]; changed = YES; }
         if (changed) [[NSUserDefaults standardUserDefaults] setObject:preferences forKey:@"YTMUltimate"];
         [YTMUSongTransitionCoordinator shared];
+        YTMURecordTransitionEvent(@"startup", YTMUTransitionsCrossfadeSupported() ? @"crossfade-interfaces-available" : @"unsupported-playback-interfaces");
         if (YTMUTransitionsCrossfadeSupported()) {
             %init(TransitionSettings);
             %init(TransitionContentPolicy);
@@ -256,12 +320,29 @@ static BOOL YTMUOwnsTransitions(void) {
             Class multi = NSClassFromString(@"MLHAMMultiPlayer");
             if (YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"pauseWithStoppageReason:"), "v", @[@"i"]) &&
                 YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"play"), "v", @[]) &&
+                YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"playerContextState"), "@", @[]) &&
+                YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayerContextState"), NSSelectorFromString(@"playerContexts"), "@", @[]) &&
+                YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"commitTransitionEffects"), "v", @[]) &&
+                YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"shouldApplyTransitionEffect:previousClip:toClip:"), "B", @[@"@", @"@", @"@"]) &&
                 YTMUTransitionMethodMatches(multi, NSSelectorFromString(@"setRate:"), "v", @[@"f"])) {
                 %init(TransitionNativePlayer);
             }
+            Class response = NSClassFromString(@"YTIPlayerResponse");
+            if (YTMUTransitionMethodMatches(response, NSSelectorFromString(@"canEnqueueUpcomingPlaybacks"), "B", @[]) &&
+                YTMUTransitionMethodMatches(response, NSSelectorFromString(@"canBeEnqueuedGaplessly"), "B", @[])) {
+                %init(TransitionQueueEligibility);
+            }
+            if (YTMUTransitionMethodMatches(NSClassFromString(@"MLPlayerPoolImpl"),
+                NSSelectorFromString(@"acquireQueuePlayerWithStickySettings:mediaPlayerResources:"), "@", @[@"@", @"@"]) &&
+                YTMUTransitionMethodMatches(NSClassFromString(@"MLMediaPlayerResources"), NSSelectorFromString(@"audioTransitionProvider"), "@", @[])) {
+                %init(TransitionNativePool);
+            }
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigMusicPlaybackClientConfigImpl"), NSSelectorFromString(@"iosEnableCrossfade"), "B", @[])) { %init(TransitionMusicFlag); }
             if (YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[])) { %init(TransitionPlayerFlag); }
-            if (YTMUTransitionsAutoMixSupported()) { %init(TransitionUpcomingPlayback); }
+            if (YTMUTransitionMethodMatches(NSClassFromString(@"YTUpcomingPlaybackManager"),
+                NSSelectorFromString(@"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:"), "v", @[@"@", @"@"])) {
+                %init(TransitionUpcomingPlayback);
+            }
             Class overlayController = NSClassFromString(@"YTMVideoOverlayViewController");
             Class overlay = NSClassFromString(@"YTMVideoOverlayView");
             Class imageView = NSClassFromString(@"YTImageView");

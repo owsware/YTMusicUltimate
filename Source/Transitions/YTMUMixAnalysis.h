@@ -28,13 +28,14 @@ typedef struct {
 typedef struct {
     double duration;
     int musicVideoType; /* 9.40.2 protobuf values; audio tracks: 1, 6, 9. */
-    int crossfadeBehavior; /* 0 unassigned, 1 disabled, 2 enabled. */
+    int crossfadeBehavior; /* Server experiment: 0 unassigned, 1 off, 2 on. */
     int live, podcast;
     const char *album;
     int hasTrackNumber, trackNumber;
 } YTMUMixContent;
 
 int YTMUAllowsMixContentPair(const YTMUMixContent *outgoing, const YTMUMixContent *incoming);
+const char *YTMUMixContentExclusion(const YTMUMixContent *outgoing, const YTMUMixContent *incoming);
 
 /* Accepts at most twelve seconds of finite mono PCM at 22050 Hz. */
 int YTMUAnalysePCM(const float *pcm, size_t count, YTMUMixAnalysis *result);

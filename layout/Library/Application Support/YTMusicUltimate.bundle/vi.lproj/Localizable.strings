@@ -119,3 +119,7 @@
 "ALL_DOWNLOADS" = "tất cả âm thanh đã tải"; //keep it lowercase
 "DELETE" = "Xóa";
 "RENAME" = "Đặt tên";
+
+"COPY_TRANSITION_REPORT" = "Copy Playback Report";
+"TRANSITION_REPORT_COPIED" = "Playback Report Copied";
+"TRANSITION_REPORT_FOOTER" = "If songs do not overlap, copy this report after a transition. It records playback checks without account details or stream URLs.";

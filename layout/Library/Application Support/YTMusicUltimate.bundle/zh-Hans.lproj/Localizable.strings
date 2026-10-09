@@ -119,3 +119,7 @@
 "ALL_DOWNLOADS" = "所有下载的音频"; //keep it lowercase
 "DELETE" = "删除";
 "RENAME" = "重命名";
+
+"COPY_TRANSITION_REPORT" = "Copy Playback Report";
+"TRANSITION_REPORT_COPIED" = "Playback Report Copied";
+"TRANSITION_REPORT_FOOTER" = "If songs do not overlap, copy this report after a transition. It records playback checks without account details or stream URLs.";

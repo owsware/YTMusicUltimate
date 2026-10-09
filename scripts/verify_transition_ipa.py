@@ -124,6 +124,7 @@ EXPECTED_METHODS = {
         "scheduleSetSequenceForQueueModification": "v16@0:8",
         "updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:": "v36@0:8@16q24B32",
         "resetSequence": "v16@0:8",
+        "isLoopingOnSingleItemEnabled": "B16@0:8",
         "setSequenceForTapNextOrTapPrevWithPlayerTransition:playbackConfig:": "v32@0:8@16@24",
     },
     "YTCrossfadeTransition": {"initWithDuration:": "@24@0:8d16"},
@@ -132,6 +133,9 @@ EXPECTED_METHODS = {
         "pauseWithStoppageReason:": "v20@0:8i16", "play": "v16@0:8", "setRate:": "v20@0:8f16",
         "clearBackgroundPlayer": "v16@0:8",
         "rate": "f16@0:8",
+        "playerContextState": "@16@0:8",
+        "commitTransitionEffects": "v16@0:8",
+        "shouldApplyTransitionEffect:previousClip:toClip:": "B40@0:8@16@24@32",
     },
     "MLHAMQueuePlayer": {"setRate:": "v20@0:8f16", "rate": "f16@0:8", "currentTime": "{?=ddd}16@0:8", "playerQueue": "@16@0:8"},
     "YTUpcomingPlaybackManager": {"upcomingPlayerTransitionController:didFetchUpcomingPlayablePlaybackData:": "v32@0:8@16@24"},
@@ -145,11 +149,19 @@ EXPECTED_METHODS = {
         "seekToTime:toleranceBefore:toleranceAfter:seekSource:": "v44@0:8d16d24d32i40",
     },
     "YTColdConfigMusicPlaybackClientConfigImpl": {"iosEnableCrossfade": "B16@0:8"},
-    "YTColdConfigIosPlayerClientSharedConfigImpl": {"enableCrossfade": "B16@0:8"},
+    "YTColdConfigIosPlayerClientSharedConfigImpl": {"enableCrossfade": "B16@0:8", "enableVolumeFading": "B16@0:8"},
     "YTColdConfig": {
         "iosPlayerClientSharedConfigEnableCrossfade": "B16@0:8",
         "musicPlaybackClientConfigIosEnableCrossfade": "B16@0:8",
+        "iosPlayerClientSharedConfigEnableVolumeFading": "B16@0:8",
     },
+    "MLPlayerPoolImpl": {"acquireQueuePlayerWithStickySettings:mediaPlayerResources:": "@32@0:8@16@24"},
+    "MLMediaPlayerResources": {"audioTransitionProvider": "@16@0:8"},
+    "YTIPlayerResponse": {
+        "canEnqueueUpcomingPlaybacks": "B16@0:8", "canBeEnqueuedGaplessly": "B16@0:8",
+        "hasPrerollAds": "B16@0:8", "isLivePlayback": "B16@0:8",
+    },
+    "MLHAMMultiPlayerContextState": {"playerContexts": "@16@0:8"},
     "YTMCrossfadeTransitionPolicy": {
         "+isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:": "B32@0:8@16@24",
     },
@@ -228,7 +240,8 @@ def verify(input_path, output_path=None):
             for marker in (b"YTMUSongTransitionCoordinator", b"SongTransitionsSettingsController", b"songTransitionsEnabled",
                            b"YTMUPlayerTransitionButton", b"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:",
                            b"iosPlayerClientSharedConfigEnableCrossfade", b"musicPlaybackClientConfigIosEnableCrossfade",
-                           b"prepareArtworkForOutgoingContext:clip:"):
+                           b"prepareArtworkForOutgoingContext:clip:", b"YTMUNativeTempoSession",
+                           b"YTMUTransitionTrace", b"canEnqueueUpcomingPlaybacks", b"iosPlayerClientSharedConfigEnableVolumeFading"):
                 if marker not in tweak:
                     raise ValueError(f"Transition code missing from injected library: {marker.decode()}")
             resources = [name for name in archive.namelist()

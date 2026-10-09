@@ -13,15 +13,24 @@
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 - (void)reloadSettings { [self.tableView reloadData]; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 1) return 1;
     return [YTMUTransitionPreferences()[@"songTransitionMode"] integerValue] == YTMUTransitionCrossfade ? 3 : 2;
 }
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section { return YTMUTransitionsAvailability(); }
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    return section == 0 ? YTMUTransitionsAvailability() : LOC(@"TRANSITION_REPORT_FOOTER");
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *preferences = YTMUTransitionPreferences();
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (indexPath.section == 1) {
+        cell.textLabel.text = LOC(@"COPY_TRANSITION_REPORT");
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
     BOOL supported = YTMUTransitionsCrossfadeSupported() && [preferences[@"YTMUltimateIsEnabled"] boolValue];
     if (indexPath.row == 0) {
         cell.textLabel.text = LOC(@"SONG_TRANSITIONS");
@@ -65,6 +74,13 @@
         ]];
     }
     return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section != 1) return;
+    UIPasteboard.generalPasteboard.string = YTMUTransitionDiagnosticsReport();
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    cell.textLabel.text = LOC(@"TRANSITION_REPORT_COPIED");
 }
 - (void)enabledChanged:(UISwitch *)sender { YTMUSetTransitionPreference(@"songTransitionsEnabled", @(sender.on)); }
 - (void)modeChanged:(UISegmentedControl *)sender { YTMUSetTransitionPreference(@"songTransitionMode", @(sender.selectedSegmentIndex)); }

@@ -1,5 +1,6 @@
 #import "YTMUSongTransitions.h"
 #import "YTMUAudioWindowDecoder.h"
+#import "YTMUNativeTempoSession.h"
 #import "../Headers/Localization.h"
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
@@ -7,7 +8,6 @@
 #include <math.h>
 
 NSString *const YTMUTransitionsChangedNotification = @"YTMUTransitionsChanged";
-static const void *YTMUOriginalPitchKey = &YTMUOriginalPitchKey;
 
 static const char *unqualified(const char *type) {
     if (!type) return "";
@@ -75,16 +75,21 @@ static NSString *videoID(id response) {
     return [identifier isKindOfClass:NSString.class] ? identifier : nil;
 }
 
+static id playerData(id response) {
+    if ([response isKindOfClass:NSClassFromString(@"YTIPlayerResponse")]) return response;
+    return objectGetter(response, @"playerData");
+}
+
 static double responseDuration(id response) {
-    id data = objectGetter(response, @"playerData");
+    id data = playerData(response);
     id details = objectGetter(data, @"videoDetails");
     SEL selector = NSSelectorFromString(@"lengthSeconds");
     if (![details respondsToSelector:selector]) return 0;
     NSMethodSignature *signature = [details methodSignatureForSelector:selector];
     const char *type = unqualified(signature.methodReturnType);
     if (signature.numberOfArguments != 2) return 0;
-    if (!strcmp(type, "q")) return ((int64_t (*)(id, SEL))objc_msgSend)(details, selector);
-    if (!strcmp(type, "Q")) return ((uint64_t (*)(id, SEL))objc_msgSend)(details, selector);
+    if (!strcmp(type, "q") || !strcmp(type, "Q") || !strcmp(type, "i") || !strcmp(type, "I"))
+        return integerGetter(details, @"lengthSeconds", 0);
     if (type[0] == '@') {
         id value = objectGetter(details, @"lengthSeconds");
         return [value isKindOfClass:NSNumber.class] || [value isKindOfClass:NSString.class] ? [value doubleValue] : 0;
@@ -120,6 +125,7 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"scheduleSetSequenceForQueueModification"), "v", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"updateUpcomingVideoIDAndLatencyTickLoggerForSequence:currentSequenceIndex:isLoopAllEnabled:"), "v", @[@"@", @"q", @"B"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"resetSequence"), "v", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"isLoopingOnSingleItemEnabled"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTMPlayerSequencerController"), NSSelectorFromString(@"setSequenceForTapNextOrTapPrevWithPlayerTransition:playbackConfig:"), "v", @[@"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"spawnCrossfadeWithActiveContext:activeClip:nextContext:"), "v", @[@"@", @"@", @"@"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"MLHAMMultiPlayer"), NSSelectorFromString(@"pauseWithStoppageReason:"), "v", @[@"i"]) &&
@@ -135,8 +141,10 @@ BOOL YTMUTransitionsCrossfadeSupported(void) {
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"seekToTime:toleranceBefore:toleranceAfter:seekSource:"), "v", @[@"d", @"d", @"d", @"i"]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigMusicPlaybackClientConfigImpl"), NSSelectorFromString(@"iosEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfigIosPlayerClientSharedConfigImpl"), NSSelectorFromString(@"enableVolumeFading"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableCrossfade"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"musicPlaybackClientConfigIosEnableCrossfade"), "B", @[]) &&
+            YTMUTransitionMethodMatches(NSClassFromString(@"YTColdConfig"), NSSelectorFromString(@"iosPlayerClientSharedConfigEnableVolumeFading"), "B", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"contentPlayerResponse"), "@", @[]) &&
             YTMUTransitionMethodMatches(NSClassFromString(@"YTPlayerViewController"), NSSelectorFromString(@"shouldPlaybackController:applyTransitionEffect:currentPlayerResponse:upcomingPlayerResponse:"), "B", @[@"@", @"@", @"@", @"@"]);
     });
@@ -191,13 +199,12 @@ BOOL YTMUTransitionsRequested(void) {
 }
 
 static YTMUMixContent responseContent(id response) {
-    id data = objectGetter(response, @"playerData");
+    id data = playerData(response);
     id details = objectGetter(data, @"videoDetails");
     id config = objectGetter(objectGetter(objectGetter(data, @"playerConfig"), @"audioConfig"), @"crossfadeConfig");
     id metadata = objectGetter(data, @"trackAlbumMetadata");
     NSString *album = objectGetter(metadata, @"externalPlaylistId");
-    /* Values are verified from 9.40.2's protobuf enum descriptors. Unknown
-       crossfade policy is an unassigned experiment, not a content veto. */
+    /* Values are verified from 9.40.2's protobuf enum descriptors. */
     return (YTMUMixContent){
         .duration = responseDuration(response),
         .musicVideoType = (int)integerGetter(details, @"musicVideoType", -1),
@@ -211,10 +218,30 @@ static YTMUMixContent responseContent(id response) {
 }
 
 BOOL YTMUTransitionsAllowContentPair(id current, id upcoming) {
-    if (!YTMUTransitionsRequested() || !current || !upcoming ||
-        !videoID(current).length || !videoID(upcoming).length || [videoID(current) isEqual:videoID(upcoming)]) return NO;
+    if (!YTMUTransitionsRequested()) return NO;
+    if (!current || !upcoming || !videoID(current).length || !videoID(upcoming).length) {
+        YTMURecordTransitionEvent(@"content", @"missing-current-or-next-response"); return NO;
+    }
+    if ([videoID(current) isEqual:videoID(upcoming)]) {
+        YTMURecordTransitionEvent(@"content", @"same-song"); return NO;
+    }
     YTMUMixContent outgoing = responseContent(current), incoming = responseContent(upcoming);
-    return YTMUAllowsMixContentPair(&outgoing, &incoming);
+    const char *reason = YTMUMixContentExclusion(&outgoing, &incoming);
+    YTMURecordTransitionEvent(@"content", [NSString stringWithFormat:@"%s; types=%d/%d; policy=%d/%d; seconds=%.0f/%.0f",
+        reason ?: "eligible", outgoing.musicVideoType, incoming.musicVideoType, outgoing.crossfadeBehavior,
+        incoming.crossfadeBehavior, outgoing.duration, incoming.duration]);
+    return reason == NULL;
+}
+
+BOOL YTMUTransitionsCanReuseNativeQueue(id data) {
+    if (!YTMUTransitionsRequested()) return NO;
+    YTMUMixContent song = responseContent(data);
+    /* Only replace the "new player for next playback" preference when YouTube
+       itself confirms this response is gapless compatible. Never override its
+       forced incompatibility, preroll or interstitial checks. */
+    song.album = NULL;
+    return YTMUAllowsMixContentPair(&song, &song) && boolGetter(data, @"canBeEnqueuedGaplessly", NO) &&
+        !boolGetter(data, @"hasPrerollAds", YES) && integerGetter(data, @"interstitialPodsArray_Count", -1) == 0;
 }
 
 NSString *YTMUTransitionsAvailability(void) {
@@ -240,14 +267,8 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 @property (nonatomic, weak) id nativeOverlapPlayer;
 @property (nonatomic) BOOL handoffInProgress;
 @property (nonatomic, weak) id incomingPlayer;
+@property (atomic, strong) YTMUNativeTempoSession *tempoSession;
 @property (nonatomic, strong) NSTimer *timer;
-@property (nonatomic) double mixStart;
-@property (nonatomic) double mixDuration;
-@property (nonatomic) double initialRate;
-@property (nonatomic) double appliedIncomingRate;
-@property (nonatomic) BOOL applyingRate;
-@property (nonatomic) double previousMixTime;
-@property (nonatomic) NSUInteger stalledTicks;
 @property (nonatomic, strong) NSHashTable *artworkControllers;
 @property (nonatomic, weak) id artworkController;
 @property (nonatomic, weak) UIView *artworkOverlay;
@@ -297,48 +318,68 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         dispatch_async(dispatch_get_main_queue(), ^{ [self bindSequencer:sequencer playerController:controller]; }); return;
     }
     self.sequencer = sequencer; self.playerController = controller;
+    YTMURecordTransitionEvent(@"sequencer", [NSString stringWithFormat:@"bound %@ / %@", [sequencer class], [controller class]]);
 }
 - (void)preferencesChanged:(NSNotification *)notification {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self preferencesChanged:notification]; }); return; }
     NSDictionary *preferences = YTMUTransitionPreferences();
     if ([preferences isEqualToDictionary:self.preferences]) return;
     self.preferences = preferences;
+    YTMURecordTransitionEvent(@"preferences", [NSString stringWithFormat:@"enabled=%@ mode=%@ seconds=%@",
+        preferences[@"songTransitionsEnabled"], preferences[@"songTransitionMode"], preferences[@"crossfadeDuration"]]);
     [self cancel];
     [[NSNotificationCenter defaultCenter] postNotificationName:YTMUTransitionsChangedNotification object:nil];
     [self updateSequence];
-    SEL refresh = NSSelectorFromString(@"scheduleSetSequenceForQueueModification");
-    if (YTMUTransitionMethodMatches([self.sequencer class], refresh, "v", @[]))
-        ((void (*)(id, SEL))objc_msgSend)(self.sequencer, refresh);
 }
 - (void)environmentChanged:(NSNotification *)notification {
-    dispatch_async(dispatch_get_main_queue(), ^{ [self cancel]; [self updateSequence]; });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        YTMURecordTransitionEvent(@"environment", notification.name);
+        [self cancel]; [self updateSequence];
+    });
 }
 - (void)updateSequence {
     SEL selector = NSSelectorFromString(@"updateCrossfadeTransitionInActiveSequence");
     if (YTMUTransitionMethodMatches([self.sequencer class], selector, "v", @[]))
         ((void (*)(id, SEL))objc_msgSend)(self.sequencer, selector);
+    /* Refresh copied native upcoming playback objects as well as the sequencer
+       items. Mutating a previously copied item's effect alone can stay stale. */
+    SEL refresh = NSSelectorFromString(@"scheduleSetSequenceForQueueModification");
+    if (YTMUTransitionMethodMatches([self.sequencer class], refresh, "v", @[]))
+        ((void (*)(id, SEL))objc_msgSend)(self.sequencer, refresh);
 }
 - (BOOL)allowsTransitionsForPlaybackController:(id)controller current:(id)current upcoming:(id)upcoming {
     if (!YTMUTransitionsAllowContentPair(current, upcoming)) return NO;
     id status = objectGetter(controller, @"playerStatus");
-    if (!status || boolGetter(status, @"externalPlayback", YES) ||
-        boolGetter(status, @"pictureInPicture", NO) ||
-        boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES)) return NO;
+    NSString *reason = !status ? @"missing-player-status" :
+        boolGetter(status, @"externalPlayback", YES) ? @"casting-or-unknown-route" :
+        boolGetter(status, @"pictureInPicture", NO) ? @"picture-in-picture" :
+        boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES) ? @"repeat-one-or-missing-sequencer" : nil;
+    YTMURecordTransitionEvent(@"playback-policy", [NSString stringWithFormat:@"%@; controller=%@; status=%@",
+        reason ?: @"eligible", [controller class], [status class]]);
+    if (reason) return NO;
     return YES;
 }
 - (double)crossfadeDuration {
-    if (boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES)) return 0;
+    return [self crossfadeDurationForSequencer:self.sequencer];
+}
+- (double)crossfadeDurationForSequencer:(id)sequencer {
+    /* Native construction can run inside init, before the coordinator binds.
+       Evaluate repeat-one on the sequencer actually requesting the effect. */
+    if (boolGetter(sequencer, @"isLoopingOnSingleItemEnabled", YES)) return 0;
     NSString *currentID = videoID(objectGetter(self.playerController, @"contentPlayerResponse"));
-    NSString *nextID = objectGetter(self.sequencer, @"upcomingVideoID");
+    NSString *nextID = objectGetter(sequencer, @"upcomingVideoID");
     NSString *pair = currentID && nextID ? [NSString stringWithFormat:@"%@/%@", currentID, nextID] : nil;
-    if ([self.preferences[@"songTransitionMode"] integerValue] == YTMUTransitionAutoMix && self.plan.kind != YTMUMixBypass && [pair isEqualToString:self.pair])
+    if (self.plan.kind != YTMUMixBypass && [pair isEqualToString:self.pair])
         return self.plan.duration;
     double duration = [self.preferences[@"crossfadeDuration"] doubleValue];
     double currentDuration = responseDuration(objectGetter(self.playerController, @"contentPlayerResponse"));
     return currentDuration > 0 ? MIN(duration, currentDuration / 2) : duration;
 }
 - (void)observeCurrentResponse:(id)current upcomingResponse:(id)upcoming {
-    if (![NSThread isMainThread] || !YTMUTransitionsRequested() || self.incomingPlayer || self.handoffInProgress) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self observeCurrentResponse:current upcomingResponse:upcoming]; }); return;
+    }
+    if (!YTMUTransitionsRequested() || self.incomingPlayer || self.handoffInProgress) return;
     NSString *currentID = videoID(current), *nextID = videoID(upcoming);
     id immediateNext = objectGetter(self.sequencer, @"upcomingVideoID");
     if (!currentID.length || !nextID.length || ![immediateNext isEqual:nextID]) return;
@@ -349,14 +390,25 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     double outgoingDuration = responseDuration(current), incomingDuration = responseDuration(upcoming);
     double fallback = [self.preferences[@"crossfadeDuration"] doubleValue];
     self.plan = YTMUPlanMix(NULL, NULL, outgoingDuration, incomingDuration, fallback, 0, 0);
+    YTMURecordTransitionEvent(@"plan", [NSString stringWithFormat:@"crossfade %.2f seconds", self.plan.duration]);
+    NSUInteger generation = self.generation;
+    /* Do not recursively rebuild a queue from inside its eligibility callback. */
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id state = objectGetter(self.nativeOverlapPlayer, @"playerContextState");
+        if (generation == self.generation && !self.handoffInProgress && !objectGetter(state, @"backgroundPlayerContext"))
+            [self updateSequence];
+    });
     if ([self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
     NSString *tailKey = [NSString stringWithFormat:@"%@/tail/%.3f", currentID, outgoingDuration];
     NSString *headKey = [NSString stringWithFormat:@"%@/head/%.3f", nextID, incomingDuration];
     NSData *cachedTail = [self.cache objectForKey:tailKey], *cachedHead = [self.cache objectForKey:headKey];
-    if (NSProcessInfo.processInfo.lowPowerModeEnabled && (!cachedTail || !cachedHead)) return;
+    if (NSProcessInfo.processInfo.lowPowerModeEnabled && (!cachedTail || !cachedHead)) {
+        YTMURecordTransitionEvent(@"analysis", @"cached-only; using crossfade in Low Power Mode"); return;
+    }
     NSURL *tailURL = audioURL(current), *headURL = audioURL(upcoming);
-    if ((!cachedTail && !tailURL) || (!cachedHead && !headURL)) return;
-    NSUInteger generation = self.generation;
+    if ((!cachedTail && !tailURL) || (!cachedHead && !headURL)) {
+        YTMURecordTransitionEvent(@"analysis", @"audio window unavailable; using crossfade"); return;
+    }
     __weak typeof(self) weakSelf = self;
     NSBlockOperation *operation = [NSBlockOperation new];
     __weak NSBlockOperation *weakOperation = operation;
@@ -382,8 +434,12 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
                 if (tailData) [strongSelf cacheAnalysis:tailData forKey:tailKey];
                 if (headData) [strongSelf cacheAnalysis:headData forKey:headKey];
                 strongSelf.plan = plan;
+                YTMURecordTransitionEvent(@"analysis", [NSString stringWithFormat:@"outro=%d intro=%d plan=%d fade=%.2f rate=%.4f",
+                    haveTail, haveHead, plan.kind, plan.duration, plan.incomingRate]);
                 /* Rebuilding a transition after overlap begins would change its end point. */
-                if (!strongSelf.incomingPlayer) [strongSelf updateSequence];
+                id state = objectGetter(strongSelf.nativeOverlapPlayer, @"playerContextState");
+                if (!strongSelf.incomingPlayer && !strongSelf.handoffInProgress && !objectGetter(state, @"backgroundPlayerContext"))
+                    [strongSelf updateSequence];
             });
         }
     }];
@@ -406,6 +462,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     }
     id current = objectGetter(self.playerController, @"contentPlayerResponse");
     id upcoming = objectGetter(data, @"playerResponse");
+    YTMURecordTransitionEvent(@"prefetch", [NSString stringWithFormat:@"current=%@ next=%@", [current class], [upcoming class]]);
     id controller = objectIvar(self.playerController, "_playbackController");
     Class policy = NSClassFromString(@"YTMCrossfadeTransitionPolicy");
     SEL selector = NSSelectorFromString(@"isCrossfadeTransitionEnabledForCurrentPlayerResponse:upcomingPlayerResponse:");
@@ -415,7 +472,10 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         [self observeCurrentResponse:current upcomingResponse:upcoming];
 }
 - (void)prepareIncomingContext:(id)context {
-    if (![NSThread isMainThread] || self.plan.kind != YTMUMixAutoMix || !YTMUTransitionsRequested()) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self prepareIncomingContext:context]; }); return;
+    }
+    if (self.plan.kind != YTMUMixAutoMix || !YTMUTransitionsRequested()) return;
     id player = objectGetter(context, @"player");
     id queue = objectGetter(player, @"playerQueue");
     if (!queue) return;
@@ -423,10 +483,10 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     /* Enqueue before native play, on the player's own queue. Existing renderers are covered too. */
     dispatch_async((dispatch_queue_t)queue, ^{
         if (generation == self.generation)
-            [self prepareAudioRenderer:objectIvar(player, "_audioTrackRenderer") generation:generation];
+            [self prepareAudioRenderer:objectIvar(player, "_audioTrackRenderer") queue:(dispatch_queue_t)queue generation:generation];
     });
 }
-- (void)prepareAudioRenderer:(id)trackRenderer generation:(NSUInteger)generation {
+- (void)prepareAudioRenderer:(id)trackRenderer queue:(dispatch_queue_t)queue generation:(NSUInteger)generation {
     if (!YTMUTransitionsRequested() || !YTMUTransitionsAutoMixSupported() ||
         [YTMUTransitionPreferences()[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
     id renderer = objectGetter(trackRenderer, @"underlyingRenderer");
@@ -434,20 +494,19 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     SEL setter = NSSelectorFromString(@"setAudioTimePitchAlgorithm:");
     NSString *original = objectGetter(renderer, @"audioTimePitchAlgorithm");
     if (!original) return;
-    if (!objc_getAssociatedObject(renderer, YTMUOriginalPitchKey)) objc_setAssociatedObject(renderer, YTMUOriginalPitchKey, original, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (!objc_getAssociatedObject(renderer, YTMUNativePitchKey)) {
+        objc_setAssociatedObject(renderer, YTMUNativePitchKey, original, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(renderer, YTMUNativePitchQueueKey, queue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(renderer, YTMUNativePitchGenerationKey, @(generation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ((void (*)(id, SEL, id))objc_msgSend)(renderer, setter, AVAudioTimePitchAlgorithmSpectral);
     if (![objectGetter(renderer, @"audioTimePitchAlgorithm") isEqual:AVAudioTimePitchAlgorithmSpectral]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(renderer, setter, original);
-        objc_setAssociatedObject(renderer, YTMUOriginalPitchKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        YTMURestoreNativePitch(renderer);
         return;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         if (generation == self.generation && YTMUTransitionsRequested()) [self.renderers addObject:renderer];
-        else {
-            NSString *saved = objc_getAssociatedObject(renderer, YTMUOriginalPitchKey);
-            if (saved) ((void (*)(id, SEL, id))objc_msgSend)(renderer, setter, saved);
-            objc_setAssociatedObject(renderer, YTMUOriginalPitchKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        }
+        else dispatch_async(queue, ^{ YTMURestoreNativePitchForGeneration(renderer, @(generation)); });
     });
 }
 - (void)nativeFadeWillStart:(id)multiPlayer outgoingContext:(id)outgoing activeClip:(id)clip {
@@ -463,13 +522,17 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     self.handoffInProgress = NO;
     id nativeState = objectGetter(multiPlayer, @"playerContextState");
     if (objectGetter(nativeState, @"activePlayerContext") != incoming || !objectGetter(nativeState, @"backgroundPlayerContext")) {
+        YTMURecordTransitionEvent(@"overlap", @"spawn-did-not-retain-both-players");
         [self cancelArtwork]; return;
     }
+    YTMURecordTransitionEvent(@"overlap", [NSString stringWithFormat:@"both-native-players-active; app-state=%ld",
+        (long)UIApplication.sharedApplication.applicationState]);
     self.nativeOverlapPlayer = multiPlayer;
     self.artworkRunning = self.outgoingArtwork != nil;
     if (self.artworkRunning) [self resumeMix];
     if (self.plan.kind != YTMUMixAutoMix ||
-        [self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix) return;
+        [self.preferences[@"songTransitionMode"] integerValue] != YTMUTransitionAutoMix ||
+        fabs(self.plan.incomingRate - 1) < 0.001) { [self restorePitchAlgorithms]; return; }
     id player = objectGetter(incoming, @"player");
     if (!YTMUTransitionMethodMatches([player class], NSSelectorFromString(@"currentTime"), "{?=ddd}", @[]) ||
         !YTMUTransitionMethodMatches([player class], NSSelectorFromString(@"rate"), "f", @[]) ||
@@ -483,6 +546,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     NSUInteger generation = self.generation;
     YTMUMixPlan plan = self.plan;
     dispatch_async((dispatch_queue_t)queue, ^{
+        if (generation != self.generation) return;
+        /* Native renderer creation may happen after the pre-play preparation. */
+        [self prepareAudioRenderer:objectIvar(player, "_audioTrackRenderer") queue:(dispatch_queue_t)queue generation:generation];
         id renderer = objectGetter(objectIvar(player, "_audioTrackRenderer"), @"underlyingRenderer");
         /* No speed adjustment unless the actual incoming renderer confirms pitch preservation. */
         BOOL pitchReady = [renderer isKindOfClass:AVSampleBufferAudioRenderer.class] &&
@@ -491,42 +557,27 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
             id state = objectGetter(multiPlayer, @"playerContextState");
             if (generation != self.generation) return;
             if (!pitchReady || objectGetter(state, @"activePlayerContext") != incoming || !YTMUTransitionsRequested()) {
+                YTMURecordTransitionEvent(@"tempo", @"pitch preservation unavailable; using crossfade");
                 [self restorePitchAlgorithms]; return;
             }
-            YTMUNativePlayerTime time = ((YTMUNativePlayerTime (*)(id, SEL))objc_msgSend)(player, NSSelectorFromString(@"currentTime"));
-            if (!isfinite(time.mediaTime) || time.mediaTime > 0.15) { [self restorePitchAlgorithms]; return; }
             self.mixingPlayer = multiPlayer; self.incomingPlayer = player;
-            self.initialRate = plan.incomingRate; self.mixDuration = plan.duration * plan.incomingRate; self.mixStart = time.mediaTime;
-            self.previousMixTime = time.mediaTime; self.stalledTicks = 0;
-            [self setIncomingRate:plan.incomingRate]; [self resumeMix];
+            __weak typeof(self) weakSelf = self;
+            __block __weak YTMUNativeTempoSession *weakSession;
+            YTMUNativeTempoSession *session = [[YTMUNativeTempoSession alloc] initWithPlayer:player queue:(dispatch_queue_t)queue
+                renderer:renderer initialRate:plan.incomingRate duration:plan.duration completion:^{
+                    typeof(self) strongSelf = weakSelf;
+                    if (!strongSelf || strongSelf.tempoSession != weakSession) return;
+                    strongSelf.tempoSession = nil; strongSelf.incomingPlayer = nil; strongSelf.mixingPlayer = nil;
+                    [strongSelf restorePitchAlgorithms];
+                }];
+            weakSession = session; self.tempoSession = session;
+            if (self.playbackPaused) [session pause];
+            [session start];
         });
     });
 }
-- (void)setIncomingRate:(double)rate {
-    if (!self.incomingPlayer) return;
-    self.appliedIncomingRate = rate;
-    self.applyingRate = YES;
-    ((void (*)(id, SEL, float))objc_msgSend)(self.incomingPlayer, NSSelectorFromString(@"setRate:"), (float)rate);
-    self.applyingRate = NO;
-}
 - (void)tick:(NSTimer *)timer {
-    BOOL artworkActive = [self updateArtworkProgress];
-    id player = self.incomingPlayer;
-    if (!player) { if (!artworkActive) [self pauseMix]; return; }
-    YTMUNativePlayerTime time = ((YTMUNativePlayerTime (*)(id, SEL))objc_msgSend)(player, NSSelectorFromString(@"currentTime"));
-    double elapsed = time.mediaTime - self.mixStart;
-    if (!isfinite(elapsed) || elapsed < -0.1 || !YTMUTransitionsRequested()) { [self cancel]; return; }
-    self.stalledTicks = fabs(time.mediaTime - self.previousMixTime) < 0.001 ? self.stalledTicks + 1 : 0;
-    self.previousMixTime = time.mediaTime;
-    if (self.stalledTicks > 100) { [self cancel]; return; }
-    if (elapsed < self.mixDuration) return;
-    double progress = (elapsed - self.mixDuration) / 2;
-    [self setIncomingRate:YTMUMixRateAtProgress(self.initialRate, progress)];
-    if (progress >= 1) {
-        self.incomingPlayer = nil; self.mixingPlayer = nil;
-        if (!artworkActive) [self pauseMix];
-        [self restorePitchAlgorithms];
-    }
+    if (![self updateArtworkProgress]) [self pauseMix];
 }
 - (void)pauseMix {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self pauseMix]; }); return; }
@@ -534,7 +585,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)resumeMix {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self resumeMix]; }); return; }
-    if (self.playbackPaused || (!self.incomingPlayer && !self.artworkRunning) || self.timer) return;
+    if (self.playbackPaused || !self.artworkRunning || self.timer) return;
     self.timer = [NSTimer timerWithTimeInterval:1.0 / 20 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
     self.timer.tolerance = 0.01;
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
@@ -543,13 +594,15 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self nativePlaybackPaused]; }); return;
     }
-    self.playbackPaused = YES; [self pauseMix];
+    self.playbackPaused = YES; [self.tempoSession pause]; [self pauseMix];
+    if (YTMUTransitionsRequested()) YTMURecordTransitionEvent(@"transport", @"paused");
 }
 - (void)nativePlaybackResumed {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self nativePlaybackResumed]; }); return;
     }
-    self.playbackPaused = NO; [self resumeMix];
+    self.playbackPaused = NO; [self.tempoSession resume]; [self resumeMix];
+    if (YTMUTransitionsRequested()) YTMURecordTransitionEvent(@"transport", @"playing");
 }
 - (void)nativeRateChanged:(float)rate player:(id)player {
     if (![NSThread isMainThread]) {
@@ -558,7 +611,27 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     /* Native activation re-applies 1x to every context. Keep an ongoing, verified
        incoming tempo adjustment when the user's playback speed has not changed. */
     if (player == self.mixingPlayer && self.incomingPlayer && fabsf(rate - 1) < 0.001)
-        [self setIncomingRate:self.appliedIncomingRate];
+        [self.tempoSession reapplyRate];
+}
+- (void)nativePlaybackSpeedWillChange {
+    if (![NSThread isMainThread]) {
+        [self.tempoSession cancelRestoringRate:NO];
+        dispatch_async(dispatch_get_main_queue(), ^{ [self nativePlaybackSpeedWillChange]; }); return;
+    }
+    /* The user's native rate setter runs after the hook. Never enqueue a 1x
+       restoration that would overwrite the newly selected playback speed. */
+    [self.tempoSession cancelRestoringRate:NO]; self.tempoSession = nil;
+    self.incomingPlayer = nil; [self cancel];
+}
+- (NSString *)diagnosticsSnapshot {
+    id current = objectGetter(self.playerController, @"contentPlayerResponse");
+    id nativeController = objectIvar(self.playerController, "_playbackController");
+    return [NSString stringWithFormat:@"Sequencer: %@; player: %@; playback: %@; current response: %@\nNext song known: %@; repeat-one: %@; analysis queued: %lu; cache: %lu; tempo active: %@; paused: %@",
+        [self.sequencer class], [self.playerController class], [nativeController class], [current class],
+        objectGetter(self.sequencer, @"upcomingVideoID") ? @"yes" : @"no",
+        boolGetter(self.sequencer, @"isLoopingOnSingleItemEnabled", YES) ? @"yes/unknown" : @"no",
+        (unsigned long)self.analysisQueue.operationCount, (unsigned long)self.cacheKeys.count,
+        self.tempoSession ? @"yes" : @"no", self.playbackPaused ? @"yes" : @"no"];
 }
 - (void)sequenceChanged {
     if (![NSThread isMainThread]) {
@@ -580,7 +653,8 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self cancel]; }); return; }
     self.generation++; self.pair = nil;
     [self cancelArtwork];
-    [self.analysisQueue cancelAllOperations]; [self pauseMix]; [self setIncomingRate:1];
+    [self.analysisQueue cancelAllOperations]; [self pauseMix];
+    [self.tempoSession cancel]; self.tempoSession = nil;
     self.incomingPlayer = nil; self.mixingPlayer = nil;
     self.plan = (YTMUMixPlan){YTMUMixBypass, 0, 1};
     id nativePlayer = self.nativeOverlapPlayer;
@@ -600,9 +674,9 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
 }
 - (void)restorePitchAlgorithms {
     for (id renderer in self.renderers) {
-        NSString *original = objc_getAssociatedObject(renderer, YTMUOriginalPitchKey);
-        if (original) ((void (*)(id, SEL, id))objc_msgSend)(renderer, NSSelectorFromString(@"setAudioTimePitchAlgorithm:"), original);
-        objc_setAssociatedObject(renderer, YTMUOriginalPitchKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        dispatch_queue_t queue = objc_getAssociatedObject(renderer, YTMUNativePitchQueueKey);
+        NSNumber *generation = objc_getAssociatedObject(renderer, YTMUNativePitchGenerationKey);
+        if (queue) dispatch_async(queue, ^{ YTMURestoreNativePitchForGeneration(renderer, generation); });
     }
     [self.renderers removeAllObjects];
 }
@@ -718,7 +792,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
         dispatch_async(dispatch_get_main_queue(), ^{ [self artworkEnvironmentChanged:notification]; }); return;
     }
     [self cancelArtwork];
-    if (!self.incomingPlayer) [self pauseMix];
+    YTMURecordTransitionEvent(@"app-state", @"inactive; artwork stopped; native audio retained");
 }
 - (void)cancelArtwork {
     [self.outgoingArtwork removeFromSuperview]; self.outgoingArtwork = nil;
@@ -726,6 +800,7 @@ typedef struct { double mediaTime, productionTime, absoluteTime; } YTMUNativePla
     self.artworkClockPlayer = nil; self.artworkIncomingID = nil; self.artworkRunning = NO;
     self.artworkIncomingAssigned = NO; self.artworkIncomingLoaded = NO;
     self.artworkProgress = 0; self.artworkRevealStart = 0;
+    [self pauseMix];
 }
 @end
 

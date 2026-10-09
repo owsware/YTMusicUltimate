@@ -25,13 +25,13 @@ static void chord(float *pcm, double root, double third, double fifth) {
 static void test_content_policy(void) {
     YTMUMixContent song = {.duration = 180, .musicVideoType = 1, .crossfadeBehavior = 0};
     YTMUMixContent next = song;
-    /* Ordinary audio tracks work without server experiment assignment or a
-       manually selected audio-only mode. Explicit content exclusions remain. */
+    /* Manual transitions work across all known experiment assignments, while
+       content exclusions remain independent of account/server experiments. */
     assert(YTMUAllowsMixContentPair(&song, &next));
     next.crossfadeBehavior = 2;
     assert(YTMUAllowsMixContentPair(&song, &next));
     next.crossfadeBehavior = 1;
-    assert(!YTMUAllowsMixContentPair(&song, &next));
+    assert(YTMUAllowsMixContentPair(&song, &next));
     next.crossfadeBehavior = -1;
     assert(!YTMUAllowsMixContentPair(&song, &next));
     next = song;
@@ -41,6 +41,7 @@ static void test_content_policy(void) {
     }
     next = song; next.live = 1;
     assert(!YTMUAllowsMixContentPair(&song, &next));
+    assert(!strcmp(YTMUMixContentExclusion(&song, &next), "live-stream"));
     next = song; next.podcast = 1;
     assert(!YTMUAllowsMixContentPair(&song, &next));
     next = song; next.duration = 2;
@@ -59,6 +60,7 @@ static void test_content_policy(void) {
     next.album = "album"; next.hasTrackNumber = 0;
     assert(YTMUAllowsMixContentPair(&song, &next));
     assert(!YTMUAllowsMixContentPair(NULL, &next));
+    assert(!strcmp(YTMUMixContentExclusion(NULL, &next), "missing-content"));
 }
 
 int main(void) {
@@ -108,6 +110,7 @@ int main(void) {
     assert(YTMUPlanMix(NULL, NULL, NAN, 180, 4, 1, 0).kind == YTMUMixBypass);
     assert(YTMUPlanMix(NULL, NULL, 2, 180, 4, 1, 0).kind == YTMUMixBypass);
     assert(YTMUPlanMix(NULL, NULL, 5, 180, 12, 1, 0).duration <= 2.5);
+    assert(YTMUPlanMix(NULL, NULL, 180, 5, 12, 0, 0).duration == 2.5);
     assert(YTMUPlanMix(NULL, NULL, 240, 180, NAN, 1, 0).duration == 4);
     assert(fabs(YTMUMixRateAtProgress(1.04, 0) - 1.04) < 1e-6);
     assert(YTMUMixRateAtProgress(1.04, 1) == 1);

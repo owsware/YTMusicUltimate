@@ -19,19 +19,30 @@ AutoMix additionally requires independent native player rate control and the
 actual incoming `AVSampleBufferAudioRenderer` to accept and report Apple's
 pitch-preserving spectral algorithm. Missing capabilities retain crossfade or
 native playback. An unsupported or inaccessible analysis stream falls back to
-crossfade. Ordinary audio tracks accept an unassigned server crossfade experiment
-(Unknown = 0); an explicit Disabled = 1 response still vetoes transitions. Song
+crossfade. Ordinary audio tracks use the user's explicit selection across the
+server's known crossfade experiment values (0, 1 and 2). Song
 classification uses the verified protobuf music type instead of requiring the
 user to select audio-only mode. Sequential album tracks retain native transitions.
 Native engine flags are enabled at startup through the actual `YTColdConfig`
-facade getters read by playback initialization, independently of the saved on/off
-toggle; transition scheduling stays off until a mode is enabled.
+facade getters and implementation getters read by playback initialization,
+independently of the saved on/off toggle. Both `enableCrossfade` and
+`enableVolumeFading` are required: `MLPlayerPoolImpl` uses the first to select
+`MLHAMMultiPlayer`, while `YTQueuePlaybackTimelineManager` uses the second to
+create the audio transition provider and transition effects. Earlier builds did
+not enable the second flag. Transition scheduling stays off until a mode is enabled.
+An eligible song may reuse the native queue despite the server's preference to
+create a new player for the next song, only when YouTube's own gapless check passes
+and the response has no preroll/interstitial ads. Forced stream incompatibility
+retains native playback. Duration construction checks the actual requesting
+sequencer, including during initialization. Planning refreshes copied upcoming
+playbacks through the native debounced queue scheduler.
 Videos, live streams, podcasts, casting, picture-in-picture and repeat-one bypass
 mixing. User-selected playback speeds other than 1× suppress tempo adjustment.
 
-**Status: both earlier device builds reported no audible overlap. The new build
-corrects the engine facade flags and current-response getter. Audible playback
-and artwork synchronization still require a device test; AutoMix is unverified.**
+**Status: all three earlier device builds reported no audible overlap. Revision 4
+corrects the missing native volume-fading activation and additional queue/planning
+gates, and adds a playback report. Audible playback, background recovery and
+artwork synchronization still require a device test; AutoMix is unverified.**
 The reported iOS 26.6.2 device has not been accessed. A successful build does not
 prove audible overlap, correct reporting, pitch preservation or battery savings.
 AutoMix's musical decisions are an independent implementation; reproducing
@@ -62,7 +73,13 @@ PCM is mono at 22,050 Hz; only analysis results are cached, with at most 64 entr
 An uncached pair can therefore use up to 12 MiB of additional data. Decode/seek
 work may include container headers and segment edges. There is no full-track
 download, full-track analysis or continuous idle timer. Low Power Mode uses
-cached analysis only. The 20 Hz tempo recovery timer exists only during a mix.
+cached analysis only. Tempo recovery runs at 10 Hz with scheduling leeway, solely
+on the incoming native audio player's serial queue. It has no UIKit/run-loop
+dependency, stops waking while paused, and is removed after recovery/cancellation.
+Buffering holds the media clock and never cancels native overlap based on an
+elapsed wall-clock timeout. Pitch-algorithm restoration uses the same player queue
+and generation guards; stale cleanup cannot reset a newly prepared renderer.
+The foreground-only artwork timer runs at 20 Hz during an actual visible blend.
 
 Spectral-flux beat estimates, chroma key estimates and RMS energy guide planning.
 Uncertain or incompatible pairs use crossfade. Confident compatible pairs align
@@ -79,7 +96,7 @@ thumbnail. YouTube keeps ownership of incoming image loading and caching; the
 feature makes no extra artwork requests and adds no settings or controls.
 
 Progress follows the outgoing native player's media clock, rather than a
-wall-clock animation, and shares the existing 20 Hz transition timer. Pause
+wall-clock animation, using a foreground-only 20 Hz artwork timer. Pause
 holds the current blend; buffering cannot advance it. If the incoming cover
 loads late, the old cover stays visible until it can dissolve over the remaining
 overlap. No timer runs for an idle cover. Missing or hidden artwork skips the
@@ -99,6 +116,21 @@ The standalone verification script below records the actual input version and
 executable hash, verifies the 9.40.2 playback interfaces, and checks the injected
 code and settings resources. Run it against the downloaded build. Its report
 explicitly records `on_device_validation: not_performed`.
+
+## Playback report
+
+After testing a transition, open **YTMusicUltimate → Player Settings → Song
+Transitions → Copy Playback Report**. Paste the copied text when reporting a failure.
+The report identifies revision 4 and records runtime hook/capability availability,
+the actual native player/transition-provider classes, queue compatibility, content
+and route/repeat vetoes, scheduled duration, native fade acceptance, simultaneous
+player activation, analysis fallback and tempo recovery. App-state values are
+0 = foreground, 1 = inactive and 2 = background.
+
+This trace is bounded to 32 event counters and 32 recent entries in memory. It
+has no polling or persistent log writes and includes no account details, song
+identifiers or media URLs. It resets when the app exits. Playback buttons remain
+the two compact toggles below Shuffle/Repeat; diagnostics add only a settings row.
 
 The player toggles use transparent backgrounds and native control colours,
 including artwork-derived themes and the tweak's OLED theme. A small dot marks
